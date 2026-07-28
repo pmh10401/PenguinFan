@@ -7,12 +7,21 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "FanControllerCore", targets: ["FanControllerCore"]),
+        .library(name: "SMCKit", targets: ["SMCKit"]),
     ],
     targets: [
         .target(name: "FanControllerCore"),
+        .target(
+            name: "SMCKit",
+            dependencies: ["FanControllerCore"]
+        ),
         .testTarget(
             name: "FanControllerCoreTests",
             dependencies: ["FanControllerCore"]
+        ),
+        .testTarget(
+            name: "SMCKitTests",
+            dependencies: ["SMCKit"]
         ),
     ]
 )
