@@ -56,12 +56,23 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Circle()
-                .fill(model.ipcConnected ? Color.green : Color.secondary)
-                .frame(width: 7, height: 7)
-            Text(model.ipcConnected ? "연결됨" : "안전 대기")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(
+                            model.ipcConnected
+                                ? Color.green
+                                : Color.secondary
+                        )
+                        .frame(width: 7, height: 7)
+                    Text(model.ipcConnected ? "연결됨" : "안전 대기")
+                        .font(.caption2.weight(.medium))
+                }
+                Text(lastUpdatedText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.secondary)
         }
         .padding(14)
     }
@@ -218,5 +229,15 @@ struct MenuBarView: View {
 
     private var temperatureGradient: Gradient {
         Gradient(colors: [.teal, .yellow, .orange, .red])
+    }
+
+    private var lastUpdatedText: String {
+        guard let timestamp = model.snapshot?.timestamp else {
+            return "센서 연결 중"
+        }
+        return timestamp.formatted(
+            date: .omitted,
+            time: .standard
+        )
     }
 }

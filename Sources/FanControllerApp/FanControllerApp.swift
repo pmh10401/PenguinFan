@@ -6,6 +6,16 @@ struct FanControllerApp: App {
     @StateObject private var runtime = RuntimeController()
 
     var body: some Scene {
+        WindowGroup("Fan Controller", id: "dashboard") {
+            MenuBarView()
+                .environmentObject(model)
+                .task {
+                    runtime.start(model: model)
+                }
+        }
+        .defaultSize(width: 360, height: 620)
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(model)
