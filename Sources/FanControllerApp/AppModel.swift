@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
     @Published var diagnosticMessage: String?
     @Published var capabilities: HardwareCapabilities?
     @Published var ipcConnected = false
+    var modeRequestHandler: ((ControlMode) -> Void)?
 
     init(settings: FanSettings = .safeDefaults) {
         self.settings = settings
@@ -57,18 +58,23 @@ final class AppModel: ObservableObject {
     }
 
     func selectMode(_ mode: ControlMode) {
-        guard mode != .systemAuto else {
-            returnToSystemAuto()
-            return
-        }
         settings.mode = mode
-        controlStatus = .authorizing
-        diagnosticMessage = ipcConnected
-            ? nil
-            : "관리자 제어 연결 후 적용됩니다."
+        if mode == .systemAuto {
+            controlStatus = .restoring
+        } else {
+            controlStatus = .authorizing
+            diagnosticMessage = ipcConnected
+                ? nil
+                : "관리자 제어 연결 후 적용됩니다."
+        }
+        modeRequestHandler?(mode)
     }
 
     func returnToSystemAuto() {
+        selectMode(.systemAuto)
+    }
+
+    func markSystemAuto() {
         settings.mode = .systemAuto
         controlStatus = .systemAuto
         diagnosticMessage = nil

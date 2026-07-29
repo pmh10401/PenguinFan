@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct FanControllerApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var runtime = RuntimeController()
 
     var body: some Scene {
         MenuBarExtra {
@@ -10,6 +11,9 @@ struct FanControllerApp: App {
                 .environmentObject(model)
         } label: {
             Label(model.menuBarTitle, systemImage: model.menuBarSymbol)
+                .task {
+                    runtime.start(model: model)
+                }
         }
         .menuBarExtraStyle(.window)
 
