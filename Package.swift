@@ -8,12 +8,17 @@ let package = Package(
     products: [
         .library(name: "FanControllerCore", targets: ["FanControllerCore"]),
         .library(name: "SMCKit", targets: ["SMCKit"]),
+        .executable(name: "FanDiagnostics", targets: ["FanDiagnostics"]),
     ],
     targets: [
         .target(name: "FanControllerCore"),
         .target(
             name: "SMCKit",
             dependencies: ["FanControllerCore"]
+        ),
+        .executableTarget(
+            name: "FanDiagnostics",
+            dependencies: ["FanControllerCore", "SMCKit"]
         ),
         .testTarget(
             name: "FanControllerCoreTests",

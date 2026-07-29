@@ -18,7 +18,11 @@ public protocol SMCTransport: Sendable {
     func write(_ key: String, bytes: [UInt8]) throws
 }
 
-public final class SMCConnection: SMCTransport, @unchecked Sendable {
+public protocol SMCKeyEnumerating: Sendable {
+    func enumerateKeys() throws -> [String]
+}
+
+public final class SMCConnection: SMCTransport, SMCKeyEnumerating, @unchecked Sendable {
     private static let kernelSelector: UInt32 = 2
     private let connection: io_connect_t
 
@@ -92,6 +96,22 @@ public final class SMCConnection: SMCTransport, @unchecked Sendable {
         input.data8 = SMCCommand.writeBytes.rawValue
         input.bytes = bytesTuple(bytes)
         _ = try call(input)
+    }
+
+    public func enumerateKeys() throws -> [String] {
+        let countValue = try read("#KEY")
+        let count = SMCDataFormat.decodeUInt32(countValue.bytes)
+        var keys: [String] = []
+        keys.reserveCapacity(Int(count))
+
+        for index in 0..<count {
+            var input = SMCParamStruct()
+            input.data8 = SMCCommand.readIndex.rawValue
+            input.data32 = index
+            let output = try call(input)
+            keys.append(fourCharacterString(output.key))
+        }
+        return keys
     }
 
     private func readKeyInfo(_ key: String) throws -> (SMCParamStruct, SMCParamStruct) {
