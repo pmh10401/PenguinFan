@@ -8,7 +8,12 @@ let package = Package(
     products: [
         .library(name: "FanControllerCore", targets: ["FanControllerCore"]),
         .library(name: "SMCKit", targets: ["SMCKit"]),
+        .library(name: "FanControlIPC", targets: ["FanControlIPC"]),
         .executable(name: "FanDiagnostics", targets: ["FanDiagnostics"]),
+        .executable(
+            name: "FanControllerAgent",
+            targets: ["FanControllerAgent"]
+        ),
     ],
     targets: [
         .target(name: "FanControllerCore"),
@@ -16,9 +21,21 @@ let package = Package(
             name: "SMCKit",
             dependencies: ["FanControllerCore"]
         ),
+        .target(
+            name: "FanControlIPC",
+            dependencies: ["FanControllerCore"]
+        ),
         .executableTarget(
             name: "FanDiagnostics",
             dependencies: ["FanControllerCore", "SMCKit"]
+        ),
+        .executableTarget(
+            name: "FanControllerAgent",
+            dependencies: [
+                "FanControllerCore",
+                "FanControlIPC",
+                "SMCKit",
+            ]
         ),
         .testTarget(
             name: "FanControllerCoreTests",
@@ -27,6 +44,14 @@ let package = Package(
         .testTarget(
             name: "SMCKitTests",
             dependencies: ["SMCKit"]
+        ),
+        .testTarget(
+            name: "FanControlIPCTests",
+            dependencies: [
+                "FanControlIPC",
+                "FanControllerAgent",
+                "SMCKit",
+            ]
         ),
     ]
 )
