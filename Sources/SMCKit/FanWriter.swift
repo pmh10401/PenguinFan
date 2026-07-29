@@ -1,6 +1,11 @@
 import FanControllerCore
 import Foundation
 
+public protocol FanWriting: Sendable {
+    func setRPM(_ rpm: Int, for fan: FanDescriptor) throws
+    func restoreSystemAuto(_ fans: [FanDescriptor]) throws
+}
+
 public enum FanWriterError: Error, Equatable, Sendable {
     case rpmOutOfRange(
         fan: Int,
@@ -12,62 +17,68 @@ public enum FanWriterError: Error, Equatable, Sendable {
     case restoreFailed(keys: [String])
 }
 
-public struct FanWriter: Sendable {
+public final class FanWriter: FanWriting, @unchecked Sendable {
     private let transport: any SMCTransport
-    private let capabilities: HardwareCapabilities
+    private let ftstAvailable: Bool
+    private let sleep: (TimeInterval) -> Void
+    private var ftstWasEnabled = false
 
     public init(
         transport: any SMCTransport,
-        capabilities: HardwareCapabilities
+        ftstAvailable: Bool
     ) {
         self.transport = transport
-        self.capabilities = capabilities
+        self.ftstAvailable = ftstAvailable
+        self.sleep = Thread.sleep(forTimeInterval:)
     }
 
-    public func setManualRPM(_ rpm: Int) throws {
-        let targets = try capabilities.fans.map { fan in
-            guard (fan.minimumRPM...fan.maximumRPM).contains(rpm) else {
-                throw FanWriterError.rpmOutOfRange(
-                    fan: fan.index,
-                    requested: rpm,
-                    minimum: fan.minimumRPM,
-                    maximum: fan.maximumRPM
-                )
-            }
+    init(
+        transport: any SMCTransport,
+        ftstAvailable: Bool,
+        sleep: @escaping (TimeInterval) -> Void
+    ) {
+        self.transport = transport
+        self.ftstAvailable = ftstAvailable
+        self.sleep = sleep
+    }
 
-            let target = try transport.read(
-                SMCKeys.targetRPM(fan: fan.index)
+    public func setRPM(_ rpm: Int, for fan: FanDescriptor) throws {
+        guard (fan.minimumRPM...fan.maximumRPM).contains(rpm) else {
+            throw FanWriterError.rpmOutOfRange(
+                fan: fan.index,
+                requested: rpm,
+                minimum: fan.minimumRPM,
+                maximum: fan.maximumRPM
             )
-            guard target.dataSize == 2 || target.dataSize == 4 else {
-                throw FanWriterError.unsupportedTargetFormat(
-                    fan: fan.index,
-                    size: target.dataSize
-                )
-            }
-            return (fan, target.dataSize)
+        }
+
+        let target = try transport.read(SMCKeys.targetRPM(fan: fan.index))
+        guard target.dataSize == 2 || target.dataSize == 4 else {
+            throw FanWriterError.unsupportedTargetFormat(
+                fan: fan.index,
+                size: target.dataSize
+            )
         }
 
         do {
-            for (fan, size) in targets {
-                try transport.write(fan.modeKey, bytes: [1])
-                try transport.write(
-                    SMCKeys.targetRPM(fan: fan.index),
-                    bytes: SMCDataFormat.encodeFloat(
-                        Float(rpm),
-                        size: size
-                    )
+            try enableManualMode(for: fan)
+            try transport.write(
+                SMCKeys.targetRPM(fan: fan.index),
+                bytes: SMCDataFormat.encodeFloat(
+                    Float(rpm),
+                    size: target.dataSize
                 )
-            }
+            )
         } catch {
-            try? restoreSystemAuto()
+            try? restoreSystemAuto([fan])
             throw error
         }
     }
 
-    public func restoreSystemAuto() throws {
+    public func restoreSystemAuto(_ fans: [FanDescriptor]) throws {
         var failedKeys: [String] = []
 
-        for fan in capabilities.fans {
+        for fan in fans {
             do {
                 try transport.write(fan.modeKey, bytes: [0])
             } catch {
@@ -75,9 +86,10 @@ public struct FanWriter: Sendable {
             }
         }
 
-        if capabilities.ftstAvailable {
+        if ftstWasEnabled {
             do {
                 try transport.write(SMCKeys.forceTest, bytes: [0])
+                ftstWasEnabled = false
             } catch {
                 failedKeys.append(SMCKeys.forceTest)
             }
@@ -86,5 +98,39 @@ public struct FanWriter: Sendable {
         if !failedKeys.isEmpty {
             throw FanWriterError.restoreFailed(keys: failedKeys)
         }
+    }
+
+    private func enableManualMode(for fan: FanDescriptor) throws {
+        do {
+            try transport.write(fan.modeKey, bytes: [1])
+            return
+        } catch {
+            guard ftstAvailable, isFirmwareRejection(error) else {
+                throw error
+            }
+        }
+
+        try transport.write(SMCKeys.forceTest, bytes: [1])
+        ftstWasEnabled = true
+        sleep(0.5)
+
+        for attempt in 0..<100 {
+            do {
+                try transport.write(fan.modeKey, bytes: [1])
+                return
+            } catch {
+                guard isFirmwareRejection(error), attempt < 99 else {
+                    throw error
+                }
+                sleep(0.1)
+            }
+        }
+    }
+
+    private func isFirmwareRejection(_ error: Error) -> Bool {
+        if case SMCError.firmware = error {
+            return true
+        }
+        return false
     }
 }

@@ -10,10 +10,10 @@ final class FanWriterTests: XCTestCase {
         ])
         let writer = FanWriter(
             transport: fake,
-            capabilities: capabilities()
+            ftstAvailable: false
         )
 
-        try writer.setManualRPM(3_200)
+        try writer.setRPM(3_200, for: fan())
 
         XCTAssertEqual(fake.writes.map(\.key), ["F0Md", "F0Tg"])
         XCTAssertEqual(fake.writes[0].bytes, [1])
@@ -30,10 +30,10 @@ final class FanWriterTests: XCTestCase {
         ])
         let writer = FanWriter(
             transport: fake,
-            capabilities: capabilities()
+            ftstAvailable: false
         )
 
-        XCTAssertThrowsError(try writer.setManualRPM(6_000)) { error in
+        XCTAssertThrowsError(try writer.setRPM(6_000, for: fan())) { error in
             XCTAssertEqual(
                 error as? FanWriterError,
                 .rpmOutOfRange(fan: 0, requested: 6_000, minimum: 1_350, maximum: 5_349)
@@ -42,73 +42,94 @@ final class FanWriterTests: XCTestCase {
         XCTAssertTrue(fake.writes.isEmpty)
     }
 
-    func testRestoreAttemptsEveryFanAndFtstAfterAnIndividualFailure() {
-        let fake = RecordingSMC(
-            values: [:],
-            failingWriteKeys: ["F0Md"]
+    func testFirmwareRejectionUsesFtstThenRetriesManualMode() throws {
+        let rejectedModeWrite = RecordingSMC.Write(
+            key: "F0Md",
+            bytes: [1]
         )
-        let capabilities = HardwareCapabilities(
-            modelIdentifier: "Mac14,6",
-            fans: [
-                FanDescriptor(
-                    index: 0,
-                    minimumRPM: 1_350,
-                    maximumRPM: 5_349,
-                    modeKey: "F0Md"
-                ),
+        let fake = RecordingSMC(
+            values: ["F0Tg": .float(1_350)],
+            failOnceWrites: [rejectedModeWrite]
+        )
+        var sleeps: [TimeInterval] = []
+        let writer = FanWriter(
+            transport: fake,
+            ftstAvailable: true,
+            sleep: { sleeps.append($0) }
+        )
+
+        try writer.setRPM(3_200, for: fan())
+
+        XCTAssertEqual(
+            fake.attemptedWriteKeys,
+            ["F0Md", "Ftst", "F0Md", "F0Tg"]
+        )
+        XCTAssertEqual(fake.writes.map(\.key), ["Ftst", "F0Md", "F0Tg"])
+        XCTAssertEqual(sleeps, [0.5])
+    }
+
+    func testRestoreAttemptsEveryFanAndFtstAfterAnIndividualFailure() {
+        let manualWrite = RecordingSMC.Write(key: "F0Md", bytes: [1])
+        let failedRestore = RecordingSMC.Write(key: "F0Md", bytes: [0])
+        let fake = RecordingSMC(
+            values: ["F0Tg": .float(1_350)],
+            failOnceWrites: [manualWrite],
+            alwaysFailWrites: [failedRestore]
+        )
+        let writer = FanWriter(
+            transport: fake,
+            ftstAvailable: true,
+            sleep: { _ in }
+        )
+        XCTAssertNoThrow(try writer.setRPM(3_200, for: fan()))
+        fake.resetRecording()
+
+        XCTAssertThrowsError(
+            try writer.restoreSystemAuto([
+                fan(),
                 FanDescriptor(
                     index: 1,
                     minimumRPM: 1_522,
                     maximumRPM: 5_777,
                     modeKey: "F1Md"
                 ),
-            ],
-            ftstAvailable: true
+            ])
         )
-        let writer = FanWriter(
-            transport: fake,
-            capabilities: capabilities
-        )
-
-        XCTAssertThrowsError(try writer.restoreSystemAuto())
         XCTAssertEqual(fake.attemptedWriteKeys, ["F0Md", "F1Md", "Ftst"])
         XCTAssertEqual(fake.writes.map(\.key), ["F1Md", "Ftst"])
         XCTAssertEqual(fake.writes.map(\.bytes), [[0], [0]])
     }
 
-    private func capabilities() -> HardwareCapabilities {
-        HardwareCapabilities(
-            modelIdentifier: "Mac14,6",
-            fans: [
-                FanDescriptor(
-                    index: 0,
-                    minimumRPM: 1_350,
-                    maximumRPM: 5_349,
-                    modeKey: "F0Md"
-                ),
-            ],
-            ftstAvailable: false
+    private func fan() -> FanDescriptor {
+        FanDescriptor(
+            index: 0,
+            minimumRPM: 1_350,
+            maximumRPM: 5_349,
+            modeKey: "F0Md"
         )
     }
 }
 
 private final class RecordingSMC: SMCTransport, @unchecked Sendable {
-    struct Write: Equatable {
+    struct Write: Hashable {
         let key: String
         let bytes: [UInt8]
     }
 
     private let values: [String: SMCValue]
-    private let failingWriteKeys: Set<String>
+    private var failOnceWrites: Set<Write>
+    private let alwaysFailWrites: Set<Write>
     private(set) var attemptedWriteKeys: [String] = []
     private(set) var writes: [Write] = []
 
     init(
         values: [String: SMCValue],
-        failingWriteKeys: Set<String> = []
+        failOnceWrites: Set<Write> = [],
+        alwaysFailWrites: Set<Write> = []
     ) {
         self.values = values
-        self.failingWriteKeys = failingWriteKeys
+        self.failOnceWrites = failOnceWrites
+        self.alwaysFailWrites = alwaysFailWrites
     }
 
     func read(_ key: String) throws -> SMCValue {
@@ -120,10 +141,17 @@ private final class RecordingSMC: SMCTransport, @unchecked Sendable {
 
     func write(_ key: String, bytes: [UInt8]) throws {
         attemptedWriteKeys.append(key)
-        if failingWriteKeys.contains(key) {
+        let write = Write(key: key, bytes: bytes)
+        if failOnceWrites.remove(write) != nil
+            || alwaysFailWrites.contains(write) {
             throw SMCError.firmware(0x85)
         }
-        writes.append(Write(key: key, bytes: bytes))
+        writes.append(write)
+    }
+
+    func resetRecording() {
+        attemptedWriteKeys = []
+        writes = []
     }
 }
 
