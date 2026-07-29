@@ -1,0 +1,46 @@
+
+{
+  "afterActualRPM" : 1664,
+  "afterTargetRPM" : 1350,
+  "beforeActualRPM" : 1353,
+  "beforeTargetRPM" : 1350,
+  "durationSeconds" : 5,
+  "fanIndex" : 0,
+  "maximumRPM" : 5349,
+  "minimumRPM" : 1350,
+  "modeKey" : "F0Md",
+  "modeValueAfterRestore" : 0,
+  "modelIdentifier" : "Mac14,6",
+  "passed" : true,
+  "requestedRPM" : 1650,
+  "responseObserved" : true,
+  "restoredSystemAuto" : true,
+  "samples" : [
+    {
+      "actualRPM" : 1554,
+      "second" : 1,
+      "targetRPM" : 1650
+    },
+    {
+      "actualRPM" : 1642,
+      "second" : 2,
+      "targetRPM" : 1650
+    },
+    {
+      "actualRPM" : 1649,
+      "second" : 3,
+      "targetRPM" : 1650
+    },
+    {
+      "actualRPM" : 1647,
+      "second" : 4,
+      "targetRPM" : 1650
+    },
+    {
+      "actualRPM" : 1664,
+      "second" : 5,
+      "targetRPM" : 1650
+    }
+  ],
+  "timestamp" : "2026-07-29T01:21:29Z"
+}

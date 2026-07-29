@@ -18,6 +18,10 @@ let package = Package(
             name: "FanControllerApp",
             targets: ["FanControllerApp"]
         ),
+        .executable(
+            name: "FanWriteVerification",
+            targets: ["FanWriteVerification"]
+        ),
     ],
     targets: [
         .target(name: "FanControllerCore"),
@@ -43,6 +47,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "FanControllerApp",
+            dependencies: [
+                "FanControllerCore",
+                "FanControlIPC",
+                "SMCKit",
+            ]
+        ),
+        .executableTarget(
+            name: "FanWriteVerification",
             dependencies: [
                 "FanControllerCore",
                 "FanControlIPC",

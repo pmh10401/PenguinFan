@@ -65,6 +65,9 @@ public final class AgentServer: @unchecked Sendable {
 
         switch request.command {
         case .status:
+            lock.withLock {
+                lastHeartbeat = clock()
+            }
             let active = lock.withLock {
                 manualFanIndices.sorted()
             }
@@ -129,6 +132,12 @@ public final class AgentServer: @unchecked Sendable {
 
         case .shutdown:
             cleanup()
+            let handler = lock.withLock { terminationHandler }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + 0.05
+            ) {
+                handler?()
+            }
             return ControlResponse(
                 id: request.id,
                 result: .acknowledged

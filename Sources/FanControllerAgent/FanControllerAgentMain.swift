@@ -42,20 +42,21 @@ private enum FanControllerAgentMain {
                 throw AgentStartupError.systemCall("chmod", errno)
             }
 
+            let shutdown = DispatchSemaphore(value: 0)
             agent.startWatchdog {
                 socket.close()
-                CFRunLoopStop(CFRunLoopGetMain())
+                shutdown.signal()
             }
             let signals = installSignalHandlers {
                 agent.cleanup()
                 socket.close()
-                CFRunLoopStop(CFRunLoopGetMain())
+                shutdown.signal()
             }
+            shutdown.wait()
             withExtendedLifetime(signals) {
-                CFRunLoopRun()
+                agent.cleanup()
+                socket.close()
             }
-            agent.cleanup()
-            socket.close()
         } catch {
             let message = "FanControllerAgent: \(error)\n"
             FileHandle.standardError.write(Data(message.utf8))
@@ -116,7 +117,7 @@ private func installSignalHandlers(
         signal(signalNumber, SIG_IGN)
         let source = DispatchSource.makeSignalSource(
             signal: signalNumber,
-            queue: .main
+            queue: .global(qos: .userInitiated)
         )
         source.setEventHandler(handler: handler)
         source.resume()

@@ -63,6 +63,50 @@ final class AgentServerTests: XCTestCase {
         XCTAssertTrue(writer.setCalls.isEmpty)
     }
 
+    func testShutdownRestoresAndInvokesTerminationHandler() {
+        let writer = RecordingFanWriter()
+        let server = AgentServer(
+            writer: writer,
+            capabilities: capabilities(),
+            clock: { 100 }
+        )
+        let terminated = DispatchSemaphore(value: 0)
+        server.startWatchdog {
+            terminated.signal()
+        }
+
+        let response = server.handle(
+            ControlRequest(id: UUID(), command: .shutdown)
+        )
+
+        XCTAssertEqual(response.result, .acknowledged)
+        XCTAssertEqual(
+            terminated.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(writer.restoreCalls, [[fan()]])
+    }
+
+    func testStatusRequestRefreshesInitialWatchdogGrace() {
+        let writer = RecordingFanWriter()
+        var now: TimeInterval = 100
+        let server = AgentServer(
+            writer: writer,
+            capabilities: capabilities(),
+            clock: { now }
+        )
+        now = 105.5
+        _ = server.handle(
+            ControlRequest(id: UUID(), command: .status)
+        )
+
+        now = 110.5
+        server.checkWatchdog()
+
+        XCTAssertFalse(server.isTerminated)
+        XCTAssertTrue(writer.restoreCalls.isEmpty)
+    }
+
     private func capabilities() -> HardwareCapabilities {
         HardwareCapabilities(
             modelIdentifier: "Mac14,6",
