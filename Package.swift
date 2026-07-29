@@ -14,6 +14,10 @@ let package = Package(
             name: "FanControllerAgent",
             targets: ["FanControllerAgent"]
         ),
+        .executable(
+            name: "FanControllerApp",
+            targets: ["FanControllerApp"]
+        ),
     ],
     targets: [
         .target(name: "FanControllerCore"),
@@ -37,6 +41,14 @@ let package = Package(
                 "SMCKit",
             ]
         ),
+        .executableTarget(
+            name: "FanControllerApp",
+            dependencies: [
+                "FanControllerCore",
+                "FanControlIPC",
+                "SMCKit",
+            ]
+        ),
         .testTarget(
             name: "FanControllerCoreTests",
             dependencies: ["FanControllerCore"]
@@ -51,6 +63,13 @@ let package = Package(
                 "FanControlIPC",
                 "FanControllerAgent",
                 "SMCKit",
+            ]
+        ),
+        .testTarget(
+            name: "FanControllerAppTests",
+            dependencies: [
+                "FanControllerApp",
+                "FanControllerCore",
             ]
         ),
     ]
