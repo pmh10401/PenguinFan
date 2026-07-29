@@ -2,17 +2,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.0.3}"
 
 if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
   printf 'Invalid version: %s\n' "$VERSION" >&2
   exit 64
 fi
 
-"$ROOT/script/build_and_run.sh" --verify
+FAN_CONTROLLER_BUNDLE_ID="com.local.M2MaxFanController" \
+  "$ROOT/script/build_and_run.sh" --verify
 
-APP="$ROOT/dist/FanController.app"
-PKG_ROOT="$ROOT/.build/installer-root"
+APP="$ROOT/dist-1.0.3/FanController.app"
+PKG_ROOT="$ROOT/.build/installer-root-1.0.3"
 DESTINATION="$PKG_ROOT/Applications/FanController.app"
 OUTPUT_DIR="$ROOT/installer"
 PACKAGE="$OUTPUT_DIR/FanController-$VERSION.pkg"

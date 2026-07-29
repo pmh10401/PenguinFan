@@ -4,6 +4,7 @@ import Foundation
 
 public final class SensorReader: @unchecked Sendable {
     public static let m2ProMaxTemperatureKeys = [
+        "TCMz",
         "TC10", "TC11", "TC12", "TC13",
         "TC20", "TC21", "TC22", "TC23",
         "TC30", "TC31", "TC32", "TC33",
@@ -102,6 +103,9 @@ public final class SensorReader: @unchecked Sendable {
     }
 
     private func candidateTemperatureKeys() -> [String] {
+        if !temperatureKeys.isEmpty {
+            return temperatureKeys
+        }
         if let enumerator = transport as? any SMCKeyEnumerating,
            let keys = try? enumerator.enumerateKeys() {
             let dynamicKeys = keys.filter { $0.first == "T" }
@@ -109,7 +113,7 @@ public final class SensorReader: @unchecked Sendable {
                 return dynamicKeys
             }
         }
-        return temperatureKeys
+        return []
     }
 
     private func readRPM(_ key: String) throws -> Int {

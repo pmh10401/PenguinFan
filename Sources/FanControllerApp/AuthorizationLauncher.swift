@@ -32,9 +32,12 @@ actor AuthorizationLauncher {
         }
 
         let agentURL = try locateAgent()
-        let directory = FileManager.default.temporaryDirectory
+        let directory = URL(
+            fileURLWithPath: "/private/tmp",
+            isDirectory: true
+        )
             .appendingPathComponent(
-                "fan-controller-\(UUID().uuidString)",
+                "fc-\(UUID().uuidString)",
                 isDirectory: true
             )
         try FileManager.default.createDirectory(
@@ -67,18 +70,33 @@ actor AuthorizationLauncher {
         self.process = process
         sessionDirectory = directory
 
+        var processExitObservedAt: Date?
         for _ in 0..<300 {
-            if FileManager.default.fileExists(atPath: socketURL.path) {
+            if socketIsReady(
+                socketURL,
+                ownerUID: getuid()
+            ) {
                 return socketURL
             }
             if !process.isRunning {
-                let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let message = String(decoding: data, as: UTF8.self)
-                if process.terminationStatus == -128
-                    || message.localizedCaseInsensitiveContains("cancel") {
-                    throw AuthorizationLauncherError.authorizationCancelled
+                if processExitObservedAt == nil {
+                    processExitObservedAt = Date()
                 }
-                throw AuthorizationLauncherError.agentFailed(message)
+                if Date().timeIntervalSince(processExitObservedAt!) >= 1 {
+                    let data = errorPipe.fileHandleForReading
+                        .readDataToEndOfFile()
+                    let output = String(decoding: data, as: UTF8.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if process.terminationStatus == -128
+                        || output.localizedCaseInsensitiveContains("cancel") {
+                        throw AuthorizationLauncherError
+                            .authorizationCancelled
+                    }
+                    let message = output.isEmpty
+                        ? "권한 소켓이 준비되기 전에 에이전트가 종료되었습니다."
+                        : output
+                    throw AuthorizationLauncherError.agentFailed(message)
+                }
             }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -105,6 +123,22 @@ actor AuthorizationLauncher {
             }
         }
         throw AuthorizationLauncherError.helperNotFound
+    }
+
+    private func socketIsReady(
+        _ url: URL,
+        ownerUID: uid_t
+    ) -> Bool {
+        guard let attributes = try? FileManager.default
+            .attributesOfItem(atPath: url.path),
+              let owner = attributes[.ownerAccountID] as? NSNumber,
+              owner.uint32Value == ownerUID,
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.uint16Value & 0o777 == 0o600
+        else {
+            return false
+        }
+        return true
     }
 
     private func shellQuote(_ value: String) -> String {

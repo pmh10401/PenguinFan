@@ -3,5 +3,6 @@
 .build/
 .build_fan_controller/
 dist/
+dist-*/
 installer/*.pkg
 installer/*.dmg

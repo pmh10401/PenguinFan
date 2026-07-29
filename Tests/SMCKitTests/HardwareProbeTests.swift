@@ -102,6 +102,41 @@ final class HardwareProbeTests: XCTestCase {
         XCTAssertEqual(snapshot.maximumTemperature, 74)
         XCTAssertEqual(snapshot.validTemperatureKeys, ["Tp1h"])
     }
+
+    func testSensorReaderPrefersConfiguredCPUHotspotKey() throws {
+        let fake = FakeSMC(
+            values: [
+                "F0Ac": .float(2_500),
+                "F0Tg": .float(2_600),
+                "TCMz": .float(71),
+                "TaTP": .float(106),
+            ],
+            enumeratedKeys: ["TCMz", "TaTP"]
+        )
+        let capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [
+                FanDescriptor(
+                    index: 0,
+                    minimumRPM: 2_317,
+                    maximumRPM: 7_826,
+                    modeKey: "F0Md"
+                ),
+            ],
+            ftstAvailable: false
+        )
+        let reader = SensorReader(
+            transport: fake,
+            capabilities: capabilities,
+            temperatureKeys: ["TCMz"],
+            thermalPressure: { .nominal }
+        )
+
+        let snapshot = try reader.snapshot()
+
+        XCTAssertEqual(snapshot.maximumTemperature, 71)
+        XCTAssertEqual(snapshot.validTemperatureKeys, ["TCMz"])
+    }
 }
 
 private final class FakeSMC: SMCTransport, SMCKeyEnumerating, @unchecked Sendable {

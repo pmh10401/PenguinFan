@@ -6,6 +6,7 @@ CONFIGURATION="release"
 SHOULD_LAUNCH=1
 SHOW_LOGS=0
 TELEMETRY=0
+BUNDLE_ID="${FAN_CONTROLLER_BUNDLE_ID:-com.local.M2MaxFanController.dev}"
 
 for argument in "$@"; do
   case "$argument" in
@@ -53,7 +54,7 @@ cd "$ROOT"
 BIN_PATH="$(/usr/bin/xcrun swift build \
   -c "$CONFIGURATION" \
   --show-bin-path)"
-APP="$ROOT/dist/FanController.app"
+APP="$ROOT/dist-1.0.3/FanController.app"
 CONTENTS="$APP/Contents"
 
 rm -rf "$APP"
@@ -65,7 +66,7 @@ install -m 0755 "$BIN_PATH/FanControllerAgent" \
 install -m 0755 "$BIN_PATH/FanDiagnostics" \
   "$CONTENTS/Helpers/FanDiagnostics"
 
-cat > "$CONTENTS/Info.plist" <<'PLIST'
+cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -77,7 +78,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>FanControllerApp</string>
   <key>CFBundleIdentifier</key>
-  <string>com.local.M2MaxFanController</string>
+  <string>${BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -85,9 +86,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>1.0.3</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>4</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>
