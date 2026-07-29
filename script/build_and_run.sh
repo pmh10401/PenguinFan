@@ -7,6 +7,8 @@ SHOULD_LAUNCH=1
 SHOW_LOGS=0
 TELEMETRY=0
 BUNDLE_ID="${FAN_CONTROLLER_BUNDLE_ID:-com.local.M2MaxFanController.dev}"
+APP_VERSION="${FAN_CONTROLLER_VERSION:-1.0.9}"
+BUILD_NUMBER="${FAN_CONTROLLER_BUILD_NUMBER:-10}"
 
 for argument in "$@"; do
   case "$argument" in
@@ -54,17 +56,38 @@ cd "$ROOT"
 BIN_PATH="$(/usr/bin/xcrun swift build \
   -c "$CONFIGURATION" \
   --show-bin-path)"
-APP="$ROOT/dist-1.0.3/FanController.app"
+APP="$ROOT/dist-$APP_VERSION/PenguinFan.app"
 CONTENTS="$APP/Contents"
+ICON_SOURCE="$ROOT/Assets/PenguinFanIcon.png"
 
 rm -rf "$APP"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Helpers"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Helpers" "$CONTENTS/Resources"
 install -m 0755 "$BIN_PATH/FanControllerApp" \
   "$CONTENTS/MacOS/FanControllerApp"
 install -m 0755 "$BIN_PATH/FanControllerAgent" \
   "$CONTENTS/Helpers/FanControllerAgent"
 install -m 0755 "$BIN_PATH/FanDiagnostics" \
   "$CONTENTS/Helpers/FanDiagnostics"
+
+if [[ ! -f "$ICON_SOURCE" ]]; then
+  echo "Missing app icon: $ICON_SOURCE" >&2
+  exit 1
+fi
+
+ICONSET="$ROOT/.build/PenguinFan.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+sips -z 16 16 "$ICON_SOURCE" --out "$ICONSET/icon_16x16.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET/icon_32x32.png" >/dev/null
+sips -z 64 64 "$ICON_SOURCE" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+sips -z 128 128 "$ICON_SOURCE" --out "$ICONSET/icon_128x128.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET/icon_256x256.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET/icon_512x512.png" >/dev/null
+sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/PenguinFan.icns"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -74,7 +97,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleDevelopmentRegion</key>
   <string>ko</string>
   <key>CFBundleDisplayName</key>
-  <string>Fan Controller</string>
+  <string>PenguinFan</string>
   <key>CFBundleExecutable</key>
   <string>FanControllerApp</string>
   <key>CFBundleIdentifier</key>
@@ -82,13 +105,15 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Fan Controller</string>
+  <string>PenguinFan</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.3</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>4</string>
+  <string>${BUILD_NUMBER}</string>
+  <key>CFBundleIconFile</key>
+  <string>PenguinFan</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>

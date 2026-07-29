@@ -1,4 +1,4 @@
-# M2 Max Fan Controller
+# PenguinFan
 
 Free and open-source native macOS fan controller for the M2 Max MacBook Pro.
 
@@ -51,7 +51,7 @@ Download the latest free installer from
 The installer places the app at:
 
 ```text
-/Applications/FanController.app
+/Applications/PenguinFan.app
 ```
 
 The release is locally ad-hoc signed and is not Apple-notarized. macOS may show
@@ -98,8 +98,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 Build an installer:
 
 ```bash
-./script/build_installer.sh 1.0.3
-open installer/FanController-1.0.3.pkg
+./script/build_installer.sh 1.0.9
+open installer/PenguinFan-1.0.9.pkg
 ```
 
 Run tests:
@@ -113,7 +113,7 @@ xcrun swift test
 Return to System mode and quit the app first, then remove it:
 
 ```bash
-sudo rm -rf /Applications/FanController.app
+sudo rm -rf /Applications/PenguinFan.app
 ```
 
 The app does not install a LaunchDaemon or persistent root helper.

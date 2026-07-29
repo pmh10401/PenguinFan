@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LEGACY_APP="/Applications/FanController.app"
+
+if [[ -d "$LEGACY_APP" ]]; then
+  /bin/rm -rf "$LEGACY_APP"
+fi
+
+exit 0

@@ -14,6 +14,10 @@ private enum FanControllerAgentMain {
                 path: arguments.socketPath,
                 ownerUID: arguments.ownerUID
             )
+            let processLock = try AgentProcessLock()
+            defer {
+                withExtendedLifetime(processLock) {}
+            }
 
             let connection = try SMCConnection()
             let capabilities = try HardwareProbe(

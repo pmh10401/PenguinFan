@@ -89,6 +89,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .navigationTitle("Fan Controller 설정")
+        .navigationTitle(ProductBrand.settingsTitle)
     }
 }

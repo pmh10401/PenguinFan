@@ -6,6 +6,31 @@ import XCTest
 @testable import SMCKit
 
 final class AgentServerTests: XCTestCase {
+    func testProcessLockRejectsSecondOwner() throws {
+        let path = temporaryLockPath()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let first = try AgentProcessLock(path: path)
+        defer { first.release() }
+
+        XCTAssertThrowsError(try AgentProcessLock(path: path)) { error in
+            XCTAssertEqual(
+                error as? AgentProcessLockError,
+                .alreadyRunning
+            )
+        }
+    }
+
+    func testProcessLockCanBeReacquiredAfterRelease() throws {
+        let path = temporaryLockPath()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let first = try AgentProcessLock(path: path)
+
+        first.release()
+
+        let second = try AgentProcessLock(path: path)
+        second.release()
+    }
+
     func testWatchdogRestoresAndTerminatesAfterSixSeconds() {
         let writer = RecordingFanWriter()
         var now: TimeInterval = 100
@@ -122,6 +147,14 @@ final class AgentServerTests: XCTestCase {
             maximumRPM: 5_349,
             modeKey: "F0Md"
         )
+    }
+
+    private func temporaryLockPath() -> String {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "fan-controller-agent-\(UUID().uuidString).lock"
+            )
+            .path
     }
 }
 

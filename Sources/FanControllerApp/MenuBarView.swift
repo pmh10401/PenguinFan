@@ -4,6 +4,8 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    var openSettingsAction: (() -> Void)?
+    var openDiagnosticsAction: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,14 +44,14 @@ struct MenuBarView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 9)
                     .fill(Color.orange.gradient)
-                Image(systemName: "fan.fill")
+                Image(nsImage: PenguinMenuBarIcon.make())
                     .foregroundStyle(.white)
                     .font(.system(size: 17, weight: .bold))
             }
             .frame(width: 34, height: 34)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Fan Controller")
+                Text(ProductBrand.displayName)
                     .font(.system(.headline, design: .rounded).weight(.bold))
                 Text("Apple Silicon Thermal Control")
                     .font(.caption2)
@@ -184,8 +186,20 @@ struct MenuBarView: View {
 
     private var footer: some View {
         HStack {
-            Button("설정") { openWindow(id: "settings") }
-            Button("진단") { openWindow(id: "diagnostics") }
+            Button("설정") {
+                if let openSettingsAction {
+                    openSettingsAction()
+                } else {
+                    openWindow(id: "settings")
+                }
+            }
+            Button("진단") {
+                if let openDiagnosticsAction {
+                    openDiagnosticsAction()
+                } else {
+                    openWindow(id: "diagnostics")
+                }
+            }
             Spacer()
             Button("종료") { NSApplication.shared.terminate(nil) }
         }
