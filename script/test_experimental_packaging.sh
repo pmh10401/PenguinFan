@@ -14,6 +14,9 @@ TEST_ROOT=""
 TEST_INSTALLER_DIR=""
 PUBLISHED_PACKAGE_EXISTED=0
 PUBLISHED_PACKAGE_SHA=""
+CURRENT_UID="$(/usr/bin/id -u)"
+TRUSTED_TEST_OUTPUT_PARENT="/private/tmp/com.local.PenguinFan.task7-tests-$CURRENT_UID"
+TEST_ROOT_TOKEN=""
 
 fail() {
   printf "FAIL: %s\n" "$1" >&2
@@ -114,7 +117,20 @@ cleanup_test_state() {
 
   trap - EXIT INT TERM
   if [[ -n "$TEST_ROOT" ]]; then
-    /bin/rm -rf "$TEST_ROOT"
+    case "$TEST_ROOT" in
+      "$TRUSTED_TEST_OUTPUT_PARENT"/*)
+        if [[ -d "$TEST_ROOT" ]] && [[ ! -L "$TEST_ROOT" ]]; then
+          /bin/rm -rf "$TEST_ROOT"
+        else
+          printf 'FAIL: refusing unsafe Task 7 test-root cleanup\n' >&2
+          result=1
+        fi
+        ;;
+      *)
+        printf 'FAIL: Task 7 test root escaped its trusted parent\n' >&2
+        result=1
+        ;;
+    esac
   fi
 
   if [[ "$PUBLISHED_PACKAGE_EXISTED" -eq 1 ]]; then
@@ -134,14 +150,37 @@ trap cleanup_test_state EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ -e "$TRUSTED_TEST_OUTPUT_PARENT" ]] \
+  || [[ -L "$TRUSTED_TEST_OUTPUT_PARENT" ]]; then
+  [[ -d "$TRUSTED_TEST_OUTPUT_PARENT" ]] \
+    && [[ ! -L "$TRUSTED_TEST_OUTPUT_PARENT" ]] \
+    && [[ "$(/usr/bin/stat -f '%u' "$TRUSTED_TEST_OUTPUT_PARENT")" == \
+      "$CURRENT_UID" ]] \
+    && [[ "$(/usr/bin/stat -f '%OLp' "$TRUSTED_TEST_OUTPUT_PARENT")" == \
+      "700" ]] \
+    || fail "fixed Task 7 test parent is not a secure owned directory"
+else
+  (
+    umask 077
+    /bin/mkdir "$TRUSTED_TEST_OUTPUT_PARENT"
+  )
+fi
+
 TEST_ROOT="$(/usr/bin/mktemp -d \
-  "$ROOT/.build/task7-experimental-packaging.XXXXXX")"
+  "$TRUSTED_TEST_OUTPUT_PARENT/task7-experimental-packaging.XXXXXX")"
+/bin/chmod 700 "$TEST_ROOT"
+TEST_ROOT_TOKEN="$(/usr/bin/uuidgen)"
+printf '%s\n' "$TEST_ROOT_TOKEN" > "$TEST_ROOT/.penguinfan-task7-owner"
+/bin/chmod 600 "$TEST_ROOT/.penguinfan-task7-owner"
 TEST_INSTALLER_DIR="$TEST_ROOT/installer"
 FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-Experimental-1.1.0.pkg"
 LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
 
 BUILD_COMMAND=(
   /usr/bin/env
+  PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
+  PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
+  PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
   PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
   "$ROOT/script/build_installer.sh"
   --experimental-helper
@@ -177,23 +216,59 @@ verify_identity_signature() {
 verify_helper_has_no_fallback_surface() {
   local helper="$1"
   local inspection
-  local forbidden
+  local patterns
+  local scan_input
+  local scanner_status
 
   inspection="$(/usr/bin/mktemp \
     "$TEST_ROOT/helper-executable-inspection.XXXXXX")"
-  forbidden='proc_pidpath|SecStaticCodeCreateWithPath|SecStaticCodeCheckValidity|SecStaticCodeCopySigningInformation|inspectStaticCode|LiveProcessCodeInspectionError|StaticCodeIdentity|acceptsAdHocFallback|validateAdHocFallback|adHocFallback|fallbackRoute|route[=:]fallback'
+  patterns="$(/usr/bin/mktemp \
+    "$TEST_ROOT/helper-executable-patterns.XXXXXX")"
+  printf '%s\n' \
+    'proc_pidpath' \
+    'SecStaticCodeCreateWithPath' \
+    'SecStaticCodeCheckValidity' \
+    'SecStaticCodeCopySigningInformation' \
+    'inspectStaticCode' \
+    'LiveProcessCodeInspectionError' \
+    'StaticCodeIdentity' \
+    'acceptsAdHocFallback' \
+    'validateAdHocFallback' \
+    'adHocFallback' \
+    'fallbackRoute' \
+    'route=fallback' \
+    'route:fallback' > "$patterns"
 
   if ! /usr/bin/nm "$helper" >"$inspection" 2>&1 \
     || ! /usr/bin/nm -u "$helper" >>"$inspection" 2>&1 \
     || ! /usr/bin/strings -a "$helper" >>"$inspection" 2>&1; then
-    /bin/rm -f "$inspection"
+    /bin/rm -f "$inspection" "$patterns"
     fail "could not inspect packaged helper executable symbols and strings"
   fi
-  if /usr/bin/grep -Eiq "$forbidden" "$inspection"; then
-    /bin/rm -f "$inspection"
-    fail "packaged helper executable contains a rejected fallback surface"
+
+  scan_input="$inspection"
+  if [[ "${PENGUINFAN_TASK7_TEST_SCANNER_ERROR:-0}" == "1" ]]; then
+    scan_input="$inspection.injected-missing-input"
   fi
-  /bin/rm -f "$inspection"
+
+  set +e
+  LC_ALL=C /usr/bin/grep -aF -i -f "$patterns" -- "$scan_input" >/dev/null
+  scanner_status=$?
+  set -e
+
+  case "$scanner_status" in
+    0)
+      /bin/rm -f "$inspection" "$patterns"
+      fail "packaged helper executable contains a rejected fallback surface"
+      ;;
+    1)
+      ;;
+    *)
+      /bin/rm -f "$inspection" "$patterns"
+      fail "packaged helper fallback scanner failed to execute or read input"
+      ;;
+  esac
+  /bin/rm -f "$inspection" "$patterns"
 }
 
 verify_app() {
@@ -317,6 +392,39 @@ wait_for_published_package() {
   fail "timed out waiting for published package"
 }
 
+wait_for_app_lock_owner() {
+  local lock_file="$1"
+  local expected_pid="$2"
+  local attempt
+  for attempt in {1..600}; do
+    if [[ -f "$lock_file" ]] \
+      && [[ "$(/bin/cat "$lock_file" 2>/dev/null || true)" == \
+        "$expected_pid" ]]; then
+      return 0
+    fi
+    /bin/sleep 0.05
+  done
+  fail "timed out waiting for app publication lock owner $expected_pid"
+}
+
+wait_for_app_replacement() {
+  local app="$1"
+  local prior_inode="$2"
+  local attempt
+  local current_inode
+
+  for attempt in {1..600}; do
+    if [[ -d "$app" ]]; then
+      current_inode="$(/usr/bin/stat -f '%i' "$app" 2>/dev/null || true)"
+      if [[ -n "$current_inode" ]] && [[ "$current_inode" != "$prior_inode" ]]; then
+        return 0
+      fi
+    fi
+    /bin/sleep 0.05
+  done
+  fail "timed out waiting for direct app publication"
+}
+
 assert_no_app_staging_directories() {
   local output_root="$1"
   if /usr/bin/find "$output_root" -maxdepth 1 -type d \
@@ -342,6 +450,9 @@ IDENTITY_GATE_SHA="$(file_sha "$FINAL_PACKAGE")"
 for invalid_identity in "" "-" "Missing Signing Identity"; do
   INVALID_COMMAND=(
     /usr/bin/env
+    PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
+    PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
+    PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
     PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
     "$ROOT/script/build_installer.sh"
     --experimental-helper
@@ -366,6 +477,77 @@ fi
   || fail "wrong-Team identity changed the final artifact"
 /bin/rm -f "$FINAL_PACKAGE"
 
+# Both legacy output environment seams reject by default. Even with the
+# explicit gate, unsafe, traversing, symlinked, protected, and out-of-root
+# paths must fail before any destructive operation.
+OVERRIDE_SENTINEL="$TEST_ROOT/adversarial-target/sentinel"
+mkdir -p "$(/usr/bin/dirname "$OVERRIDE_SENTINEL")"
+printf 'adversarial path sentinel\n' > "$OVERRIDE_SENTINEL"
+OVERRIDE_SENTINEL_SHA="$(file_sha "$OVERRIDE_SENTINEL")"
+mkdir -p "$TEST_ROOT/symlink-target"
+/bin/ln -s "$TEST_ROOT/symlink-target" "$TEST_ROOT/symlink-component"
+/bin/ln -s "$TEST_ROOT/symlink-target" "$TEST_ROOT/final-symlink"
+
+if /usr/bin/env \
+  -u PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT \
+  -u PENGUINFAN_TASK7_TEST_ROOT \
+  -u PENGUINFAN_TASK7_TEST_ROOT_TOKEN \
+  PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_ROOT/default-rejected-installer" \
+  "$ROOT/script/build_installer.sh" \
+    --experimental-helper \
+    --signing-identity "$SIGNING_IDENTITY"; then
+  fail "installer output override was accepted without the explicit test gate"
+fi
+
+if /usr/bin/env \
+  -u PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT \
+  -u PENGUINFAN_TASK7_TEST_ROOT \
+  -u PENGUINFAN_TASK7_TEST_ROOT_TOKEN \
+  FAN_CONTROLLER_OUTPUT_ROOT="$TEST_ROOT/default-rejected-app" \
+  "$ROOT/script/build_and_run.sh" \
+    --experimental-helper \
+    --signing-identity "$SIGNING_IDENTITY" \
+    --verify; then
+  fail "app output override was accepted without the explicit test gate"
+fi
+
+UNSAFE_OUTPUT_PATHS=(
+  ""
+  "/"
+  "$ROOT"
+  "/Applications"
+  "$TEST_ROOT/safe/../escape"
+  "$TEST_ROOT/symlink-component/child"
+  "$TEST_ROOT/final-symlink"
+  "$TRUSTED_TEST_OUTPUT_PARENT/outside-process-root"
+)
+for unsafe_output in "${UNSAFE_OUTPUT_PATHS[@]}"; do
+  if /usr/bin/env \
+    PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1 \
+    PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT" \
+    PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN" \
+    PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$unsafe_output" \
+    "$ROOT/script/build_installer.sh" \
+      --experimental-helper \
+      --signing-identity "$SIGNING_IDENTITY"; then
+    fail "installer accepted unsafe output path: $unsafe_output"
+  fi
+
+  if /usr/bin/env \
+    PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1 \
+    PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT" \
+    PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN" \
+    FAN_CONTROLLER_OUTPUT_ROOT="$unsafe_output" \
+    "$ROOT/script/build_and_run.sh" \
+      --experimental-helper \
+      --signing-identity "$SIGNING_IDENTITY" \
+      --verify; then
+    fail "app builder accepted unsafe output path: $unsafe_output"
+  fi
+done
+[[ "$(file_sha "$OVERRIDE_SENTINEL")" == "$OVERRIDE_SENTINEL_SHA" ]] \
+  || fail "adversarial output-path tests changed their protected sentinel"
+
 # Direct Experimental app builds must gate identity before touching an existing
 # app and must restore the complete prior directory on publication failure.
 DIRECT_OUTPUT_ROOT="$TEST_ROOT/direct-app-output"
@@ -378,6 +560,9 @@ DIRECT_SENTINEL_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
 for invalid_identity in "" "-" "Missing Signing Identity"; do
   INVALID_DIRECT_COMMAND=(
     /usr/bin/env
+    PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
+    PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
+    PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
     FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
     "$ROOT/script/build_and_run.sh"
     --experimental-helper
@@ -397,6 +582,9 @@ done
 
 DIRECT_BUILD_COMMAND=(
   /usr/bin/env
+  PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
+  PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
+  PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
   FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
   "$ROOT/script/build_and_run.sh"
   --experimental-helper
@@ -426,6 +614,16 @@ assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
 "${DIRECT_BUILD_COMMAND[@]}"
 verify_app "$DIRECT_APP"
 DIRECT_VALID_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
+DIRECT_APP_LOCK="$DIRECT_OUTPUT_ROOT/.PenguinFan-Experimental-1.1.0.app-publication.lock"
+
+if PENGUINFAN_TASK7_SIGNAL_BEFORE_APP_BACKUP_MOVE=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  fail "direct app pre-backup signal injection unexpectedly succeeded"
+fi
+[[ -d "$DIRECT_APP" ]] \
+  && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_VALID_SHA" ]] \
+  || fail "pre-backup signal did not preserve the complete direct app"
+[[ ! -e "$DIRECT_APP_LOCK" ]] || fail "app lock remains after pre-backup signal"
 
 if PENGUINFAN_TASK7_SIGNAL_AFTER_APP_BACKUP_MOVE=1 \
   "${DIRECT_BUILD_COMMAND[@]}"; then
@@ -435,6 +633,80 @@ fi
   && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_VALID_SHA" ]] \
   || fail "post-backup signal did not restore the complete direct app"
 verify_app "$DIRECT_APP"
+assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
+
+if PENGUINFAN_TASK7_SIGNAL_AFTER_APP_PUBLISH=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  fail "direct app post-publish signal injection unexpectedly succeeded"
+fi
+[[ -d "$DIRECT_APP" ]] \
+  && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_VALID_SHA" ]] \
+  || fail "post-publish signal did not restore the complete direct app"
+[[ ! -e "$DIRECT_APP_LOCK" ]] || fail "app lock remains after post-publish signal"
+verify_app "$DIRECT_APP"
+assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
+
+# A live app-lock owner cannot be displaced, and a dead owner is recovered
+# without allowing the non-owner attempt to modify final publication state.
+/usr/bin/shlock -p "$$" -f "$DIRECT_APP_LOCK" \
+  || fail "could not create live-owner app lock"
+if PENGUINFAN_TASK7_APP_LOCK_WAIT_SECONDS=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  /bin/rm -f "$DIRECT_APP_LOCK"
+  fail "direct app build displaced a live lock owner"
+fi
+[[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_VALID_SHA" ]] \
+  || fail "app lock non-owner modified the live owner's app"
+/bin/rm -f "$DIRECT_APP_LOCK"
+
+printf '999999\n' > "$DIRECT_APP_LOCK"
+"${DIRECT_BUILD_COMMAND[@]}"
+[[ ! -e "$DIRECT_APP_LOCK" ]] || fail "stale app lock remains after recovery"
+verify_app "$DIRECT_APP"
+DIRECT_VALID_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
+
+# A succeeds while B waits and then fails. B must restore A's exact published
+# app. Two successful attempts must likewise serialize under the live owner.
+DIRECT_A_LOG="$TEST_ROOT/direct-concurrency-a.log"
+DIRECT_B_LOG="$TEST_ROOT/direct-concurrency-b.log"
+DIRECT_BEFORE_A_INODE="$(/usr/bin/stat -f '%i' "$DIRECT_APP")"
+PENGUINFAN_TASK7_HOLD_AFTER_APP_PUBLISH_SECONDS=2 \
+  "${DIRECT_BUILD_COMMAND[@]}" >"$DIRECT_A_LOG" 2>&1 &
+DIRECT_A_PID=$!
+wait_for_app_lock_owner "$DIRECT_APP_LOCK" "$DIRECT_A_PID"
+wait_for_app_replacement "$DIRECT_APP" "$DIRECT_BEFORE_A_INODE"
+
+PENGUINFAN_TASK7_FAIL_BEFORE_APP_PUBLISH=1 \
+  "${DIRECT_BUILD_COMMAND[@]}" >"$DIRECT_B_LOG" 2>&1 &
+DIRECT_B_PID=$!
+DIRECT_A_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
+wait "$DIRECT_A_PID" || fail "concurrent direct app build A failed"
+if wait "$DIRECT_B_PID"; then
+  fail "concurrent direct app build B unexpectedly succeeded"
+fi
+[[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_A_SHA" ]] \
+  || fail "failed direct app build B changed A's published app"
+verify_app "$DIRECT_APP"
+[[ ! -e "$DIRECT_APP_LOCK" ]] || fail "app lock remains after A/B concurrency"
+
+DIRECT_C_LOG="$TEST_ROOT/direct-concurrency-c.log"
+DIRECT_D_LOG="$TEST_ROOT/direct-concurrency-d.log"
+PENGUINFAN_TASK7_HOLD_APP_LOCK_SECONDS=2 \
+  "${DIRECT_BUILD_COMMAND[@]}" >"$DIRECT_C_LOG" 2>&1 &
+DIRECT_C_PID=$!
+wait_for_app_lock_owner "$DIRECT_APP_LOCK" "$DIRECT_C_PID"
+
+"${DIRECT_BUILD_COMMAND[@]}" >"$DIRECT_D_LOG" 2>&1 &
+DIRECT_D_PID=$!
+/bin/sleep 0.25
+[[ "$(/bin/cat "$DIRECT_APP_LOCK")" == "$DIRECT_C_PID" ]] \
+  || fail "second successful direct build displaced the live app lock owner"
+/bin/kill -0 "$DIRECT_D_PID" \
+  || fail "second successful direct build did not wait for serialization"
+wait "$DIRECT_C_PID" || fail "simultaneous direct app build C failed"
+wait "$DIRECT_D_PID" || fail "simultaneous direct app build D failed"
+verify_app "$DIRECT_APP"
+[[ ! -e "$DIRECT_APP_LOCK" ]] || fail "app lock remains after serialized successes"
 assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
 
 # A live lock owner protects the existing final artifact. A non-owner must
@@ -495,6 +767,14 @@ fi
   | /usr/bin/awk '{print $1}')" == "$A_SHA" ]] \
   || fail "B replaced A's validated package"
 verify_package "$FINAL_PACKAGE"
+
+if (
+  export PENGUINFAN_TASK7_TEST_SCANNER_ERROR=1
+  verify_package "$FINAL_PACKAGE"
+); then
+  fail "injected packaged-helper scanner error was accepted as clean"
+fi
+
 assert_no_staging_directories
 
 # TERM immediately before and immediately after the valid-final backup move

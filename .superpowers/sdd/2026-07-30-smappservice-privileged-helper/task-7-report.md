@@ -1234,3 +1234,219 @@ Developer ID signed or notarized, and it is not suitable for public
 distribution. Rebuilding requires the same usable local identity and exact
 `UUUQNVQ67B` Team policy. The artifact remains Experimental-only and was not
 installed.
+
+---
+
+## Task 7 final security repair
+
+Validation date: 2026-07-30 KST.
+
+The final round-5 re-review findings were repaired directly in the three
+packaging scripts. The packaged-helper Mach-O proof now scans the combined
+`nm`, `nm -u`, and `strings -a` output with case-insensitive fixed strings and
+explicitly classifies the scanner result: status 0 rejects a forbidden
+surface, status 1 is the only clean result, and every status greater than 1
+rejects an execution, input, or I/O failure. A deterministic missing-input
+injection exercised the status-greater-than-1 path against the helper expanded
+from an actual signed package.
+
+Direct Experimental app publication now uses a bounded `shlock` publication
+lock with PID ownership verification before every shared-state transition.
+The lock covers prior-app inspection and hashing, backup, publish, rollback,
+byte-identical restoration verification, staging cleanup, and lock release.
+Staging is unique per process. A non-owner can clean only its own staging
+directory and never modifies the final app, another process's backup, or the
+lock. Stale recovery is delegated to `shlock`, which does not displace a live
+PID owner. TERM injections before backup, after backup, and after publish all
+restored the prior app's exact directory snapshot while the lock remained
+held. Concurrent A-success/B-fail and concurrent-success cases serialized and
+left one fully verified app.
+
+`FAN_CONTROLLER_OUTPUT_ROOT` and
+`PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR` are now rejected whenever present unless
+the explicit Task 7 test gate is enabled. Gated overrides must be beneath one
+unique, mode-0700, current-user-owned test root that is a direct child of the
+fixed `/private/tmp/com.local.PenguinFan.task7-tests-<uid>` parent and must
+present a matching mode-0600 process token. Paths are lexically validated,
+their existing components are rejected if symlinked, and the secure root is
+canonicalized without accepting a symlink final component. Destructive
+Experimental app/package operations use guarded removal and move helpers that
+reject empty paths, `/`, the workspace itself, `/Applications`, dot or
+dot-dot traversal, symlink components, the allowed root itself, and every
+path outside the validated root. With no test gate, production app and package
+paths remain fixed in the worktree.
+
+No strict SecCode/Team-ID validator, stable/marketing/design file, app
+installation, or stable package/release artifact was changed. The signing
+identity remained:
+
+```text
+Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+```
+
+### Shell and worktree checks
+
+Commands:
+
+```bash
+/usr/bin/env bash -n \
+  script/build_and_run.sh \
+  script/build_installer.sh \
+  script/validate_experimental_package.sh \
+  script/test_experimental_packaging.sh
+git diff --check
+/usr/bin/security find-identity -v -p codesigning
+```
+
+Results:
+
+```text
+Shell syntax validation: exit 0
+git diff --check: exit 0
+D10DD321B33EAB9C02DB2BEB29E077986032B04E
+Apple Development: pmh10401@gmail.com (33KJJV566T)
+1 valid identities found
+```
+
+### Signed transactional, scanner, concurrency, signal, and path tests
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+```
+
+Result:
+
+```text
+grep: /private/tmp/com.local.PenguinFan.task7-tests-501/task7-experimental-packaging.Ns6wCU/helper-executable-inspection.WzLwA6.injected-missing-input: No such file or directory
+FAIL: packaged helper fallback scanner failed to execute or read input
+Task 7 identity-gated transactional and artifact checks passed.
+TEST_EXIT=0
+```
+
+The `FAIL` line is the expected result from the isolated scanner-error
+subshell; accepting that injected operational error would have failed the
+overall test. The passing suite also proved:
+
+- scanner status 1 for clean helpers and rejection of status 0 or greater than
+  1;
+- default rejection of both output environment seams;
+- rejection of empty, `/`, workspace, `/Applications`, traversal, symlink
+  component, final symlink, and outside-process-root values for both seams;
+- live-owner timeouts and safe stale-lock recovery for app and package locks;
+- direct app TERM rollback before backup, after backup, and after publish;
+- direct app A-success/B-fail preservation and successful-build
+  serialization;
+- package A-success/B-fail preservation, successful-build serialization, and
+  pre/post-backup TERM preservation;
+- strict signed app/helper verification and Experimental-only payloads; and
+- cleanup of unique app/package staging and publication locks.
+
+The published package remained outside the process-owned test root and was
+checked byte-for-byte by the test cleanup path.
+
+### Focused and full Swift test suites
+
+Commands:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test \
+  --filter 'AgentServerTests/testXPCClientValidator'
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test
+```
+
+Results:
+
+```text
+Selected AgentServerTests: 7 tests, 0 failures
+All tests: 101 tests, 0 failures
+SWIFT_TESTS_EXIT=0
+```
+
+### Release app and helper builds
+
+Commands:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerAgent
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Results:
+
+```text
+Build of product 'FanControllerAgent' complete! (0.18s)
+Build of product 'FanControllerApp' complete! (0.12s)
+RELEASE_BUILDS_EXIT=0
+```
+
+### Final transactional package and expanded executable evidence
+
+Commands:
+
+```bash
+./script/build_installer.sh \
+  --experimental-helper \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+./script/validate_experimental_package.sh \
+  installer/PenguinFan-Experimental-1.1.0.pkg \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)' \
+  UUUQNVQ67B
+/usr/sbin/pkgutil --expand-full \
+  installer/PenguinFan-Experimental-1.1.0.pkg \
+  <unique-verification-root>/expanded
+/usr/bin/codesign --verify --strict --verbose=2 \
+  <expanded-helper>
+/usr/bin/codesign --verify --strict --verbose=2 \
+  <expanded-main>
+/usr/bin/codesign --verify --deep --strict --verbose=2 \
+  <expanded-app>
+/usr/bin/shasum -a 256 \
+  installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Results:
+
+```text
+Validated experimental package:
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+EXPERIMENTAL_ONLY_PAYLOAD=verified
+
+SIGNED_ITEM=Applications/PenguinFan Experimental.app/Contents/Helpers/FanControllerAgent
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+RUNTIME=yes
+
+SIGNED_ITEM=Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+RUNTIME=yes
+
+SIGNED_ITEM=Applications/PenguinFan Experimental.app
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+RUNTIME=yes
+
+FINAL_HELPER_FALLBACK_SCANNER_STATUS=1 (clean)
+```
+
+Final artifact:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+SHA-256: 1f91e6675a0461da8715e3e9548de5b3fd0b5cdfc328d204eccdd5a6fa8c64f7
+```
+
+The final package is Experimental-only, embeds locally Apple Development
+signed code for Personal Team `UUUQNVQ67B`, and was not installed. The
+installer package remains unsigned, not notarized, and unsuitable for public
+distribution.

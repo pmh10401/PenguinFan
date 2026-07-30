@@ -7,6 +7,167 @@ VERSION_WAS_SET=0
 EXPERIMENTAL_HELPER=0
 SIGNING_IDENTITY=""
 EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
+CURRENT_UID="$(/usr/bin/id -u)"
+TRUSTED_TEST_OUTPUT_PARENT="/private/tmp/com.local.PenguinFan.task7-tests-$CURRENT_UID"
+
+path_has_safe_lexical_form() {
+  local path="$1"
+  local remainder
+  local segment
+
+  [[ -n "$path" ]] && [[ "$path" == /* ]] && [[ "$path" != "/" ]] \
+    && [[ "$path" != */ ]] || return 1
+
+  remainder="${path#/}"
+  while [[ -n "$remainder" ]]; do
+    segment="${remainder%%/*}"
+    [[ -n "$segment" ]] && [[ "$segment" != "." ]] \
+      && [[ "$segment" != ".." ]] || return 1
+    if [[ "$remainder" == */* ]]; then
+      remainder="${remainder#*/}"
+    else
+      remainder=""
+    fi
+  done
+}
+
+path_has_no_symlink_components() {
+  local path="$1"
+  local remainder="${path#/}"
+  local segment
+  local current=""
+
+  path_has_safe_lexical_form "$path" || return 1
+  while [[ -n "$remainder" ]]; do
+    segment="${remainder%%/*}"
+    current="$current/$segment"
+    [[ ! -L "$current" ]] || return 1
+    if [[ -e "$current" ]] && [[ ! -d "$current" ]] \
+      && [[ "$remainder" == */* ]]; then
+      return 1
+    fi
+    if [[ "$remainder" == */* ]]; then
+      remainder="${remainder#*/}"
+    else
+      remainder=""
+    fi
+  done
+}
+
+validate_secure_owned_directory() {
+  local path="$1"
+  local owner
+  local mode
+  local canonical
+
+  path_has_no_symlink_components "$path" || return 1
+  [[ -d "$path" ]] && [[ ! -L "$path" ]] || return 1
+  owner="$(/usr/bin/stat -f '%u' "$path" 2>/dev/null)" || return 1
+  mode="$(/usr/bin/stat -f '%OLp' "$path" 2>/dev/null)" || return 1
+  [[ "$owner" == "$CURRENT_UID" ]] && [[ "$mode" == "700" ]] || return 1
+  canonical="$(cd "$path" 2>/dev/null && /bin/pwd -P)" || return 1
+  [[ "$canonical" == "$path" ]]
+}
+
+validate_test_output_root() {
+  local output_root="$1"
+  local test_root="${PENGUINFAN_TASK7_TEST_ROOT:-}"
+  local token="${PENGUINFAN_TASK7_TEST_ROOT_TOKEN:-}"
+  local marker
+  local marker_owner
+  local marker_mode
+
+  [[ "${PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT:-0}" == "1" ]] \
+    || { echo "Experimental output overrides are disabled." >&2; return 1; }
+  [[ -n "$test_root" ]] && [[ -n "$token" ]] \
+    || { echo "A process-owned Task 7 test root is required." >&2; return 1; }
+  [[ "$token" =~ ^[A-Za-z0-9-]{16,128}$ ]] \
+    || { echo "Invalid Task 7 test-root token." >&2; return 1; }
+
+  validate_secure_owned_directory "$TRUSTED_TEST_OUTPUT_PARENT" \
+    || { echo "Task 7 trusted test parent is not secure." >&2; return 1; }
+  case "$test_root" in
+    "$TRUSTED_TEST_OUTPUT_PARENT"/*)
+      ;;
+    *)
+      echo "Task 7 test root is outside the trusted parent." >&2
+      return 1
+      ;;
+  esac
+  [[ "${test_root#"$TRUSTED_TEST_OUTPUT_PARENT"/}" != */* ]] \
+    || { echo "Task 7 test root must be a direct unique child." >&2; return 1; }
+  validate_secure_owned_directory "$test_root" \
+    || { echo "Task 7 test root is not a secure owned directory." >&2; return 1; }
+
+  marker="$test_root/.penguinfan-task7-owner"
+  [[ -f "$marker" ]] && [[ ! -L "$marker" ]] \
+    || { echo "Task 7 test-root owner marker is missing." >&2; return 1; }
+  marker_owner="$(/usr/bin/stat -f '%u' "$marker" 2>/dev/null)" || return 1
+  marker_mode="$(/usr/bin/stat -f '%OLp' "$marker" 2>/dev/null)" || return 1
+  [[ "$marker_owner" == "$CURRENT_UID" ]] && [[ "$marker_mode" == "600" ]] \
+    && [[ "$(/bin/cat "$marker")" == "$token" ]] \
+    || { echo "Task 7 test-root owner marker is invalid." >&2; return 1; }
+
+  path_has_no_symlink_components "$output_root" \
+    || { echo "Experimental output root has an unsafe path." >&2; return 1; }
+  case "$output_root" in
+    "$test_root"/*)
+      ;;
+    *)
+      echo "Experimental output root is outside the process-owned test root." >&2
+      return 1
+      ;;
+  esac
+  if [[ -e "$output_root" ]] || [[ -L "$output_root" ]]; then
+    [[ -d "$output_root" ]] && [[ ! -L "$output_root" ]] \
+      || { echo "Experimental output root is not a directory." >&2; return 1; }
+  fi
+}
+
+assert_safe_mutation_path() {
+  local path="$1"
+  local allowed_root="$2"
+
+  path_has_no_symlink_components "$path" \
+    || { printf 'Refusing unsafe mutation path: %s\n' "$path" >&2; return 1; }
+  [[ "$path" != "$ROOT" ]] && [[ "$path" != "/Applications" ]] \
+    && [[ "$path" != "$allowed_root" ]] \
+    || { printf 'Refusing protected mutation path: %s\n' "$path" >&2; return 1; }
+  case "$path" in
+    "$allowed_root"/*)
+      ;;
+    *)
+      printf 'Refusing mutation outside allowed root: %s\n' "$path" >&2
+      return 1
+      ;;
+  esac
+}
+
+safe_remove_file() {
+  local path="$1"
+  local allowed_root="$2"
+
+  assert_safe_mutation_path "$path" "$allowed_root" || return 1
+  /bin/rm -f -- "$path"
+}
+
+safe_remove_tree() {
+  local path="$1"
+  local allowed_root="$2"
+
+  assert_safe_mutation_path "$path" "$allowed_root" || return 1
+  /bin/rm -rf -- "$path"
+}
+
+safe_move() {
+  local source="$1"
+  local destination="$2"
+  local allowed_root="$3"
+
+  assert_safe_mutation_path "$source" "$allowed_root" || return 1
+  assert_safe_mutation_path "$destination" "$allowed_root" || return 1
+  /bin/mv -- "$source" "$destination"
+}
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -102,7 +263,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   APP_BUNDLE_NAME="PenguinFan Experimental.app"
   PACKAGE_NAME="PenguinFan-Experimental-1.1.0.pkg"
   PACKAGE_IDENTIFIER="com.local.PenguinFan.experimental"
-  OUTPUT_DIR="${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR:-$ROOT/installer}"
+  OUTPUT_DIR="$ROOT/installer"
+  OUTPUT_DIR_IS_TEST=0
   FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
   LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
   LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"
@@ -117,16 +279,33 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   validate_signing_identity \
     "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" || exit 64
 
+  if [[ "${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR+x}" == "x" ]]; then
+    validate_test_output_root "${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR:-}" \
+      || exit 64
+    OUTPUT_DIR="$PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR"
+    OUTPUT_DIR_IS_TEST=1
+    FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
+    LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+  fi
+
   if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
     || [[ "$LOCK_WAIT_SECONDS" -gt 600 ]]; then
     echo "Lock wait must be an integer from 1 through 600 seconds." >&2
     exit 64
   fi
 
+  path_has_no_symlink_components "$OUTPUT_DIR" \
+    || { echo "Experimental output directory has an unsafe path." >&2; exit 64; }
   mkdir -p "$OUTPUT_DIR"
+  if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
+    validate_test_output_root "$OUTPUT_DIR" || exit 64
+  fi
+  assert_safe_mutation_path "$FINAL_PACKAGE" "$OUTPUT_DIR" || exit 64
+  assert_safe_mutation_path "$LOCK_FILE" "$OUTPUT_DIR" || exit 64
 
   cleanup_experimental_publication() {
     local result=$?
+    local cleanup_ok=1
 
     trap - EXIT INT TERM
     if [[ "$LOCK_OWNED" -eq 1 ]] \
@@ -135,8 +314,11 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
         && [[ "$PUBLISHED" -ne 1 ]]; then
         if [[ "$PRIOR_PACKAGE_KNOWN_GOOD" -eq 1 ]] \
           && [[ -f "$PRIOR_VALID_PACKAGE" ]]; then
-          /bin/rm -f "$FINAL_PACKAGE"
-          /bin/mv "$PRIOR_VALID_PACKAGE" "$FINAL_PACKAGE"
+          safe_remove_file "$FINAL_PACKAGE" "$OUTPUT_DIR" || cleanup_ok=0
+          if [[ "$cleanup_ok" -eq 1 ]]; then
+            safe_move "$PRIOR_VALID_PACKAGE" "$FINAL_PACKAGE" "$OUTPUT_DIR" \
+              || cleanup_ok=0
+          fi
         elif [[ "$PRIOR_PACKAGE_KNOWN_GOOD" -eq 1 ]] \
           && [[ -f "$FINAL_PACKAGE" ]]; then
           # Signal arrived before the atomic backup move. The known-good
@@ -148,18 +330,26 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
           # before the success marker. Preserve that known-good package.
           :
         else
-          /bin/rm -f "$FINAL_PACKAGE"
+          safe_remove_file "$FINAL_PACKAGE" "$OUTPUT_DIR" || cleanup_ok=0
         fi
       fi
 
-      if [[ -n "$STAGING_DIR" ]]; then
-        /bin/rm -rf "$STAGING_DIR"
+      if [[ "$cleanup_ok" -eq 1 ]] && [[ -n "$STAGING_DIR" ]] \
+        && [[ -e "$STAGING_DIR" ]]; then
+        safe_remove_tree "$STAGING_DIR" "$OUTPUT_DIR" || cleanup_ok=0
       fi
-      /bin/rm -f "$LOCK_FILE"
+      if [[ "$cleanup_ok" -eq 1 ]] \
+        && [[ "$(/bin/cat "$LOCK_FILE" 2>/dev/null || true)" == "$$" ]]; then
+        safe_remove_file "$LOCK_FILE" "$OUTPUT_DIR" || cleanup_ok=0
+      fi
     elif [[ -n "$STAGING_DIR" ]]; then
       # Unique staging is process-owned and safe to remove without touching
       # shared publication state.
-      /bin/rm -rf "$STAGING_DIR"
+      safe_remove_tree "$STAGING_DIR" "$OUTPUT_DIR" || cleanup_ok=0
+    fi
+    if [[ "$cleanup_ok" -ne 1 ]]; then
+      echo "Package publication cleanup failed; publication lock retained." >&2
+      result=1
     fi
     exit "$result"
   }
@@ -168,6 +358,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
+  [[ ! -L "$LOCK_FILE" ]] \
+    || { echo "Package publication lock path is a symlink." >&2; exit 73; }
   LOCK_DEADLINE=$((SECONDS + LOCK_WAIT_SECONDS))
   while ! /usr/bin/shlock -p "$$" -f "$LOCK_FILE" 2>/dev/null; do
     if [[ "$SECONDS" -ge "$LOCK_DEADLINE" ]]; then
@@ -187,7 +379,10 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     "$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.staging.XXXXXX")"
   PRIOR_VALID_PACKAGE="$STAGING_DIR/prior-validated-package.pkg"
 
-  if [[ -f "$FINAL_PACKAGE" ]]; then
+  if [[ -L "$FINAL_PACKAGE" ]]; then
+    echo "Final package path is a symlink." >&2
+    exit 1
+  elif [[ -f "$FINAL_PACKAGE" ]]; then
     if "$ROOT/script/validate_experimental_package.sh" \
       "$FINAL_PACKAGE" \
       "$SIGNING_IDENTITY" \
@@ -199,26 +394,36 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
         /bin/kill -TERM "$$"
       fi
 
-      /bin/mv "$FINAL_PACKAGE" "$PRIOR_VALID_PACKAGE"
+      safe_move "$FINAL_PACKAGE" "$PRIOR_VALID_PACKAGE" "$OUTPUT_DIR"
 
       if [[ "${PENGUINFAN_TASK6_SIGNAL_AFTER_BACKUP_MOVE:-0}" == "1" ]]; then
         /bin/kill -TERM "$$"
       fi
     else
       PUBLICATION_STATE_MANAGED=1
-      /bin/rm -f "$FINAL_PACKAGE"
+      safe_remove_file "$FINAL_PACKAGE" "$OUTPUT_DIR"
       PRIOR_VALID_PACKAGE=""
     fi
+  elif [[ -e "$FINAL_PACKAGE" ]]; then
+    echo "Final package path is not a regular file." >&2
+    exit 1
   else
     PUBLICATION_STATE_MANAGED=1
     PRIOR_VALID_PACKAGE=""
   fi
 
-  FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
+  if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
+    FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
+      "$ROOT/script/build_and_run.sh" \
+        --experimental-helper \
+        --signing-identity "$SIGNING_IDENTITY" \
+        --verify
+  else
     "$ROOT/script/build_and_run.sh" \
       --experimental-helper \
       --signing-identity "$SIGNING_IDENTITY" \
       --verify
+  fi
 else
   if [[ -n "$SIGNING_IDENTITY" ]]; then
     echo "--signing-identity is supported only with --experimental-helper." >&2
@@ -233,7 +438,11 @@ else
 fi
 
 if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
-  APP="$STAGING_DIR/dist-$VERSION/$APP_BUNDLE_NAME"
+  if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
+    APP="$STAGING_DIR/dist-$VERSION/$APP_BUNDLE_NAME"
+  else
+    APP="$ROOT/dist-$VERSION/$APP_BUNDLE_NAME"
+  fi
   PKG_ROOT="$STAGING_DIR/installer-root"
   PACKAGE="$STAGING_DIR/$PACKAGE_NAME"
 else
@@ -245,12 +454,20 @@ fi
 
 DESTINATION="$PKG_ROOT/Applications/$APP_BUNDLE_NAME"
 
-rm -rf "$PKG_ROOT"
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  safe_remove_tree "$PKG_ROOT" "$OUTPUT_DIR"
+else
+  rm -rf "$PKG_ROOT"
+fi
 mkdir -p "$PKG_ROOT/Applications" "$OUTPUT_DIR"
 COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc "$APP" "$DESTINATION"
 /usr/bin/xattr -cr "$PKG_ROOT"
 find "$PKG_ROOT" -name '._*' -delete
-rm -f "$PACKAGE"
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  safe_remove_file "$PACKAGE" "$OUTPUT_DIR"
+else
+  rm -f "$PACKAGE"
+fi
 
 PKGBUILD_ARGUMENTS=(
   --identifier "$PACKAGE_IDENTIFIER"
@@ -396,7 +613,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     exit 75
   fi
 
-  /bin/mv "$PACKAGE" "$FINAL_PACKAGE"
+  safe_move "$PACKAGE" "$FINAL_PACKAGE" "$OUTPUT_DIR"
   PUBLISHED=1
   PACKAGE="$FINAL_PACKAGE"
 
