@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import FanControllerCore
 import ServiceManagement
@@ -213,6 +214,13 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             connectionFactory: { connections.removeFirst() }
         )
         let runtime = RuntimeController(serviceManager: manager)
+        let requestsCompleted = expectation(
+            description: "Both out-of-order requests completed"
+        )
+        requestsCompleted.expectedFulfillmentCount = 2
+        runtime.modeRequestCompletionObserver = { _ in
+            requestsCompleted.fulfill()
+        }
         let model = AppModel()
         model.capabilities = HardwareCapabilities(
             modelIdentifier: "Mac14,6",
@@ -232,9 +240,8 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             manualFanIndices: []
         )
         try manualConnection.replyToHeldRequest(with: .status(status))
-        await Task.yield()
         try curveConnection.replyToHeldRequest(with: .status(status))
-        try await Task.sleep(for: .milliseconds(20))
+        await fulfillment(of: [requestsCompleted], timeout: 1)
 
         XCTAssertEqual(model.settings.mode, .manual)
         XCTAssertEqual(model.controlStatus, .manual)
@@ -258,6 +265,13 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             connectionFactory: { connection }
         )
         let runtime = RuntimeController(serviceManager: manager)
+        let requestsCompleted = expectation(
+            description: "System and stale Curve requests completed"
+        )
+        requestsCompleted.expectedFulfillmentCount = 2
+        runtime.modeRequestCompletionObserver = { _ in
+            requestsCompleted.fulfill()
+        }
         let model = AppModel()
         model.capabilities = HardwareCapabilities(
             modelIdentifier: "Mac14,6",
@@ -275,7 +289,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
                 message: "stale failure"
             )
         )
-        try await Task.sleep(for: .milliseconds(20))
+        await fulfillment(of: [requestsCompleted], timeout: 1)
 
         XCTAssertEqual(model.settings.mode, .systemAuto)
         XCTAssertEqual(model.controlStatus, .systemAuto)
@@ -299,6 +313,13 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             connectionFactory: { oldConnection }
         )
         let runtime = RuntimeController(serviceManager: manager)
+        let staleEventProcessed = expectation(
+            description: "Old invalidation processed"
+        )
+        runtime.connectionFailureEventObserver = { isActive in
+            XCTAssertFalse(isActive)
+            staleEventProcessed.fulfill()
+        }
         let model = AppModel()
         model.capabilities = HardwareCapabilities(
             modelIdentifier: "Mac14,6",
@@ -309,9 +330,18 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         model.selectMode(.curve)
         await waitForRequest(oldConnection)
+        let systemApplied = expectation(
+            description: "Newer System mode applied"
+        )
+        var statusObservation: AnyCancellable? = model.$controlStatus
+            .filter { $0 == .systemAuto }
+            .sink { _ in systemApplied.fulfill() }
         model.selectMode(.systemAuto)
+        await fulfillment(of: [systemApplied], timeout: 1)
         oldConnection.invalidationHandler?()
-        try? await Task.sleep(for: .milliseconds(20))
+        await fulfillment(of: [staleEventProcessed], timeout: 1)
+        withExtendedLifetime(statusObservation) {}
+        statusObservation = nil
 
         XCTAssertEqual(model.settings.mode, .systemAuto)
         XCTAssertEqual(model.controlStatus, .systemAuto)
@@ -322,6 +352,22 @@ final class PrivilegedServiceManagerTests: XCTestCase {
     func testOldConnectionInvalidationDoesNotOverwriteNewerManualSuccess()
         async throws
     {
+        try await assertOldConnectionEventDoesNotOverwriteNewerManual(
+            .invalidation
+        )
+    }
+
+    func testOldConnectionInterruptionDoesNotOverwriteNewerManualSuccess()
+        async throws
+    {
+        try await assertOldConnectionEventDoesNotOverwriteNewerManual(
+            .interruption
+        )
+    }
+
+    private func assertOldConnectionEventDoesNotOverwriteNewerManual(
+        _ event: StaleConnectionEvent
+    ) async throws {
         let fan = FanDescriptor(
             index: 0,
             minimumRPM: 1_500,
@@ -337,6 +383,13 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             connectionFactory: { connections.removeFirst() }
         )
         let runtime = RuntimeController(serviceManager: manager)
+        let staleEventProcessed = expectation(
+            description: "Old connection event processed"
+        )
+        runtime.connectionFailureEventObserver = { isActive in
+            XCTAssertFalse(isActive)
+            staleEventProcessed.fulfill()
+        }
         let model = AppModel()
         model.capabilities = HardwareCapabilities(
             modelIdentifier: "Mac14,6",
@@ -347,6 +400,12 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         model.selectMode(.curve)
         await waitForRequest(oldConnection)
+        let manualApplied = expectation(
+            description: "Newer Manual mode applied"
+        )
+        var statusObservation: AnyCancellable? = model.$controlStatus
+            .filter { $0 == .manual }
+            .sink { _ in manualApplied.fulfill() }
         model.selectMode(.manual)
         await waitForRequest(currentConnection)
         try currentConnection.replyToHeldRequest(
@@ -358,9 +417,11 @@ final class PrivilegedServiceManagerTests: XCTestCase {
                 )
             )
         )
-        try await Task.sleep(for: .milliseconds(20))
-        oldConnection.invalidationHandler?()
-        try await Task.sleep(for: .milliseconds(20))
+        await fulfillment(of: [manualApplied], timeout: 1)
+        event.deliver(to: oldConnection)
+        await fulfillment(of: [staleEventProcessed], timeout: 1)
+        withExtendedLifetime(statusObservation) {}
+        statusObservation = nil
 
         XCTAssertEqual(model.settings.mode, .manual)
         XCTAssertEqual(model.controlStatus, .manual)
@@ -940,5 +1001,19 @@ private enum TestFailure: LocalizedError {
 
     var errorDescription: String? {
         "expected failure"
+    }
+}
+
+private enum StaleConnectionEvent {
+    case invalidation
+    case interruption
+
+    func deliver(to connection: FakeXPCConnection) {
+        switch self {
+        case .invalidation:
+            connection.invalidationHandler?()
+        case .interruption:
+            connection.interruptionHandler?()
+        }
     }
 }

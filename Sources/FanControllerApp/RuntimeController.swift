@@ -18,6 +18,8 @@ final class RuntimeController: ObservableObject {
     private var started = false
     private var lastSnapshotAt: Date?
     private weak var model: AppModel?
+    var modeRequestCompletionObserver: ((UInt64) -> Void)?
+    var connectionFailureEventObserver: ((Bool) -> Void)?
 
     private lazy var defaultServiceManager = PrivilegedServiceManager(
         restoreSystemModeAndDisconnect: { [weak self] in
@@ -57,6 +59,7 @@ final class RuntimeController: ObservableObject {
                     generation: generation,
                     model: model
                 )
+                self.modeRequestCompletionObserver?(generation)
             }
         }
         model.privilegedApprovalHandler = {
@@ -444,7 +447,9 @@ final class RuntimeController: ObservableObject {
         guard let model else {
             return
         }
-        guard activeConnectionIdentity == connectionIdentity else {
+        let isActive = activeConnectionIdentity == connectionIdentity
+        connectionFailureEventObserver?(isActive)
+        guard isActive else {
             return
         }
         await failControl(

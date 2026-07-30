@@ -246,3 +246,77 @@ Result:
 ```text
 Build of product 'FanControllerApp' complete! (2.87s)
 ```
+
+## Fix Round 3/5: Deterministic Stale-Connection Tests
+
+### Finding
+
+The stale-connection regression tests used fixed 20-millisecond sleeps. Those
+delays did not prove that the invalidation callback and Runtime filtering had
+completed before assertions. Direct Runtime coverage for stale XPC
+interruption was also missing.
+
+### TDD RED
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result: test compilation failed as expected because the minimal internal
+`modeRequestCompletionObserver` and `connectionFailureEventObserver` test
+seams did not exist.
+
+### Test-Only Synchronization
+
+- Replaced fixed sleeps with bounded XCTest expectations.
+- Observed `AppModel.$controlStatus` to prove newer System or Manual state was
+  applied before delivering the stale event.
+- Waited for Runtime's connection-failure observer to prove each old
+  invalidation or interruption event was delivered and classified as inactive
+  before assertions.
+- Waited for both mode-request completions in out-of-order readiness and stale
+  failure tests.
+- Added direct Runtime coverage for stale interruption after a newer successful
+  Manual request.
+- All waits use a one-second bound and therefore fail deterministically instead
+  of hanging.
+
+### Minimal Source Seam
+
+`RuntimeController` gained two internal optional observer closures. They default
+to `nil`, only report existing completion/classification points, and do not
+change control, safety, registration, or XPC behavior.
+
+### Focused Tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result:
+
+```text
+Executed 26 tests, with 0 failures (0 unexpected).
+Test Suite 'Selected tests' passed.
+```
+
+### Release Build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete! (2.88s)
+```
