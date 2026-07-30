@@ -1,5 +1,13 @@
 # Task 7 Report: Safety and Local Runtime Validation
 
+> Evidence scope: the original validation narrative below is retained as a
+> historical snapshot from before the round-5 repair. Its earlier package SHA
+> and any legacy build command that omits `--signing-identity` are superseded
+> and are not evidence for the final artifact. The authoritative round-5
+> commands, `script/test_experimental_packaging.sh` exit-0 result, signatures,
+> Team ID, payload checks, and final SHA are recorded in
+> **Task 7 final security repair** at the end of this report.
+
 ## Scope and safety boundary
 
 Validation was performed on 2026-07-30 on:
