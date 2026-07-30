@@ -273,7 +273,7 @@ struct MenuBarView: View {
         case .curve: "온도 커브 제어가 활성화되었습니다."
         case .manual: "고정 RPM 제어가 활성화되었습니다."
         case .restoring: "시스템 자동 모드로 복구 중입니다."
-        case .failed: "제어 오류로 자동 복구했습니다."
+        case .failed: "제어 상태를 확인할 수 없어 수동 제어를 중단했습니다."
         }
     }
 

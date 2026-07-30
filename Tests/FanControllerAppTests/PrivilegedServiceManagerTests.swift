@@ -138,9 +138,218 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertEqual(service.unregisterCallCount, 0)
         XCTAssertEqual(manager.state, .enabled)
         XCTAssertEqual(model.privilegedServiceState, .enabled)
-        XCTAssertEqual(model.settings.mode, .manual)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertFalse(model.ipcConnected)
+        XCTAssertTrue(model.requiresFreshPrivilegedConfirmation)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertTrue(
+            model.diagnosticMessage?.contains("제거하지 않았습니다")
+                == true
+        )
+    }
+
+    func testTask5RestoreTimeoutFailsClosedWithoutUnregister() async {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let status = AgentStatus(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            manualFanIndices: []
+        )
+        let connection = FakeXPCConnection(
+            behaviors: [.reply(.status(status)), .hold]
+        )
+        let service = FakeServiceRegistration(status: .enabled)
+        var runtime: RuntimeController!
+        let manager = PrivilegedServiceManager(
+            service: service,
+            restoreSystemModeAndDisconnect: {
+                try await runtime.restoreForPrivilegedServiceRemoval()
+            },
+            connectionFactory: { connection },
+            connectionFailureHandler: {},
+            requestTimeout: 0.01
+        )
+        runtime = RuntimeController(serviceManager: manager)
+        let requestCompleted = expectation(
+            description: "Initial manual request completed"
+        )
+        runtime.modeRequestCompletionObserver = { _ in
+            requestCompleted.fulfill()
+        }
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.manual)
+        await fulfillment(of: [requestCompleted], timeout: 1)
         XCTAssertEqual(model.controlStatus, .manual)
-        XCTAssertTrue(model.ipcConnected)
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(service.unregisterCallCount, 0)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertTrue(model.requiresFreshPrivilegedConfirmation)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
+    func testTask5RestoreInvalidationFailsClosedWithoutUnregister()
+        async
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let status = AgentStatus(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            manualFanIndices: []
+        )
+        let connection = FakeXPCConnection(
+            behaviors: [.reply(.status(status)), .invalidate]
+        )
+        let service = FakeServiceRegistration(status: .enabled)
+        var runtime: RuntimeController!
+        let manager = PrivilegedServiceManager(
+            service: service,
+            restoreSystemModeAndDisconnect: {
+                try await runtime.restoreForPrivilegedServiceRemoval()
+            },
+            connectionFactory: { connection },
+            connectionFailureHandler: {},
+            requestTimeout: 1
+        )
+        runtime = RuntimeController(serviceManager: manager)
+        let requestCompleted = expectation(
+            description: "Initial curve request completed"
+        )
+        runtime.modeRequestCompletionObserver = { _ in
+            requestCompleted.fulfill()
+        }
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.curve)
+        await fulfillment(of: [requestCompleted], timeout: 1)
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(service.unregisterCallCount, 0)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertTrue(model.requiresFreshPrivilegedConfirmation)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
+    func testTask5UnregisterFailureAfterTeardownStaysSystem() async {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let status = AgentStatus(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            manualFanIndices: []
+        )
+        let connection = FakeXPCConnection(
+            behaviors: [
+                .reply(.status(status)),
+                .reply(.acknowledged),
+                .reply(.acknowledged),
+                .reply(.acknowledged),
+            ]
+        )
+        let service = FakeServiceRegistration(status: .enabled)
+        service.unregisterError = TestFailure.expected
+        var runtime: RuntimeController!
+        let manager = PrivilegedServiceManager(
+            service: service,
+            restoreSystemModeAndDisconnect: {
+                try await runtime.restoreForPrivilegedServiceRemoval()
+            },
+            connectionFactory: { connection },
+            connectionFailureHandler: {},
+            requestTimeout: 1
+        )
+        runtime = RuntimeController(serviceManager: manager)
+        let requestCompleted = expectation(
+            description: "Initial custom request completed"
+        )
+        runtime.modeRequestCompletionObserver = { _ in
+            requestCompleted.fulfill()
+        }
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.manual)
+        await fulfillment(of: [requestCompleted], timeout: 1)
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(service.unregisterCallCount, 1)
+        XCTAssertEqual(manager.state, .enabled)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertTrue(model.requiresFreshPrivilegedConfirmation)
+        XCTAssertFalse(model.ipcConnected)
+        XCTAssertFalse(
+            model.diagnosticMessage?.contains(
+                "실험적 권한 서비스를 제거했습니다"
+            ) == true
+        )
+    }
+
+    func testTask5MissingCoordinatorFailsClosedWithoutUnregister()
+        async
+    {
+        let service = FakeServiceRegistration(status: .enabled)
+        var runtime: RuntimeController!
+        let manager = PrivilegedServiceManager(
+            service: service,
+            restoreSystemModeAndDisconnect: {
+                try await runtime.restoreForPrivilegedServiceRemoval()
+            },
+            connectionFailureHandler: {}
+        )
+        runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(service.unregisterCallCount, 0)
+        XCTAssertEqual(manager.state, .enabled)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertTrue(model.requiresFreshPrivilegedConfirmation)
         XCTAssertTrue(
             model.diagnosticMessage?.contains("제거하지 않았습니다")
                 == true
@@ -1094,15 +1303,20 @@ private final class FakeXPCConnection:
 
     let requestReceived = DispatchSemaphore(value: 0)
 
-    private let behavior: Behavior
+    private var behaviors: [Behavior]
     private let lock = NSLock()
     private var heldRequests: [
         UUID: @Sendable (Data) -> Void
     ] = [:]
     private var storedInvalidateCallCount = 0
+    private var storedRequestCount = 0
 
     init(behavior: Behavior) {
-        self.behavior = behavior
+        behaviors = [behavior]
+    }
+
+    init(behaviors: [Behavior]) {
+        self.behaviors = behaviors
     }
 
     var invalidateCallCount: Int {
@@ -1114,7 +1328,7 @@ private final class FakeXPCConnection:
     var requestCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return heldRequests.count
+        return storedRequestCount
     }
 
     func resume() {
@@ -1137,6 +1351,10 @@ private final class FakeXPCConnection:
             let request = try XPCMessageAdapter.decodeRequest(requestData)
             lock.lock()
             heldRequests[request.id] = reply
+            storedRequestCount += 1
+            let behavior = behaviors.count > 1
+                ? behaviors.removeFirst()
+                : behaviors.first ?? .hold
             lock.unlock()
             requestReceived.signal()
 
@@ -1158,6 +1376,9 @@ private final class FakeXPCConnection:
     func replyToHeldRequest(with result: ControlResult) throws {
         lock.lock()
         let request = heldRequests.first
+        if let request {
+            heldRequests.removeValue(forKey: request.key)
+        }
         lock.unlock()
         let response = ControlResponse(
             id: try XCTUnwrap(request?.key),
@@ -1169,6 +1390,7 @@ private final class FakeXPCConnection:
     func replyToAllHeldRequests(with result: ControlResult) throws {
         lock.lock()
         let requests = heldRequests
+        heldRequests.removeAll()
         lock.unlock()
 
         for (requestID, reply) in requests {

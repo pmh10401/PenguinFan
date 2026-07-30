@@ -11,6 +11,16 @@ enum PrivilegedServiceState: Equatable {
     case failed(String)
 }
 
+struct PrivilegedServiceUnregisterFailure: Equatable {
+    enum Stage: Equatable {
+        case restore
+        case unregister
+    }
+
+    let stage: Stage
+    let message: String
+}
+
 @MainActor
 protocol PrivilegedServiceRegistering: AnyObject {
     var status: SMAppService.Status { get }
@@ -27,7 +37,12 @@ final class PrivilegedServiceManager {
         "com.local.PenguinFan.experimental.agent.plist"
 
     private(set) var state: PrivilegedServiceState
-    private(set) var lastUnregisterError: String?
+    private(set) var lastUnregisterFailure:
+        PrivilegedServiceUnregisterFailure?
+
+    var lastUnregisterError: String? {
+        lastUnregisterFailure?.message
+    }
 
     private let service: any PrivilegedServiceRegistering
     private let restoreSystemModeAndDisconnect: () async throws -> Void
@@ -79,13 +94,26 @@ final class PrivilegedServiceManager {
             return
         }
 
-        lastUnregisterError = nil
+        lastUnregisterFailure = nil
         do {
             try await restoreSystemModeAndDisconnect()
+        } catch {
+            lastUnregisterFailure = PrivilegedServiceUnregisterFailure(
+                stage: .restore,
+                message: error.localizedDescription
+            )
+            refreshStatus()
+            return
+        }
+
+        do {
             try service.unregister()
             refreshStatus()
         } catch {
-            lastUnregisterError = error.localizedDescription
+            lastUnregisterFailure = PrivilegedServiceUnregisterFailure(
+                stage: .unregister,
+                message: error.localizedDescription
+            )
             refreshStatus()
         }
     }

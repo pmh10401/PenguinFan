@@ -235,6 +235,7 @@ final class RuntimeController: ObservableObject {
             ) else {
                 return
             }
+            model.requiresFreshPrivilegedConfirmation = false
             await request(
                 mode: mode,
                 generation: generation,
@@ -481,15 +482,23 @@ final class RuntimeController: ObservableObject {
         await serviceManager.unregister()
         model.privilegedServiceState = serviceManager.state
 
-        if let message = serviceManager.lastUnregisterError {
-            model.diagnosticMessage =
-                "시스템 팬 제어 복귀를 확인하지 못해 권한 서비스를 제거하지 않았습니다. \(message) 다시 시도하세요."
+        if let failure = serviceManager.lastUnregisterFailure {
+            failClosedAfterRemovalFailure(model: model)
+            switch failure.stage {
+            case .restore:
+                model.diagnosticMessage =
+                    "시스템 팬 제어 복귀를 확인하지 못해 권한 서비스를 제거하지 않았습니다. \(failure.message) 새 연결로 다시 승인한 뒤 재시도하세요."
+            case .unregister:
+                model.diagnosticMessage =
+                    "시스템 팬 제어로 복귀했지만 권한 서비스 제거에 실패했습니다. \(failure.message) 서비스는 등록된 상태이며 제거를 다시 시도할 수 있습니다."
+            }
             return false
         }
 
         switch serviceManager.state {
         case .notRegistered:
             model.markSystemAuto()
+            model.requiresFreshPrivilegedConfirmation = false
             model.diagnosticMessage =
                 "실험적 권한 서비스를 제거했습니다."
             return true
@@ -508,10 +517,10 @@ final class RuntimeController: ObservableObject {
         legacyFallbackEnabled() || model.legacyFallbackEnabled
     }
 
-    private func restoreForPrivilegedServiceRemoval() async throws {
+    func restoreForPrivilegedServiceRemoval() async throws {
         guard let coordinator else {
-            model?.markSystemAuto()
-            return
+            throw PrivilegedServiceRemovalRuntimeError
+                .missingCoordinator
         }
 
         try await coordinator.restoreSystemAuto()
@@ -524,6 +533,21 @@ final class RuntimeController: ObservableObject {
         terminationBox.set(nil)
         model?.ipcConnected = false
         model?.markSystemAuto()
+    }
+
+    private func failClosedAfterRemovalFailure(model: AppModel) {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
+        terminationBox.set(nil)
+        model.ipcConnected = false
+        model.pendingPrivilegedMode = nil
+        model.isPrivilegedApprovalPresented = false
+        model.settings.mode = .systemAuto
+        model.controlStatus = .failed
+        model.requiresFreshPrivilegedConfirmation = true
     }
 
     private func installLifecycleObservers() {
@@ -592,9 +616,15 @@ private struct StaleModeRequestError: Error {}
 
 private enum PrivilegedServiceRemovalRuntimeError: LocalizedError {
     case unavailable
+    case missingCoordinator
 
     var errorDescription: String? {
-        "팬 제어 런타임을 사용할 수 없습니다."
+        switch self {
+        case .unavailable:
+            "팬 제어 런타임을 사용할 수 없습니다."
+        case .missingCoordinator:
+            "System 모드 복귀를 확인할 제어 연결이 없습니다."
+        }
     }
 }
 

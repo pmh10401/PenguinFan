@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     @Published var isPrivilegedServiceRemovalConfirmationPresented = false
     @Published var isPrivilegedServiceRemovalInProgress = false
     @Published var legacyFallbackEnabled = false
+    @Published var requiresFreshPrivilegedConfirmation = false
     var modeRequestHandler: ((ControlMode) -> Void)?
     var modeRequestGenerationHandler: ((ControlMode, UInt64) -> Void)?
     var privilegedApprovalHandler: ((UInt64) async -> Void)?
@@ -107,7 +108,8 @@ final class AppModel: ObservableObject {
         let generation = modeRequestGeneration
 
         if mode != .systemAuto,
-           privilegedServiceState != .enabled {
+           privilegedServiceState != .enabled
+            || requiresFreshPrivilegedConfirmation {
             settings.mode = .systemAuto
             pendingPrivilegedMode = mode
             pendingPrivilegedGeneration = generation
@@ -183,8 +185,6 @@ final class AppModel: ObservableObject {
 
         isPrivilegedServiceRemovalConfirmationPresented = false
         isPrivilegedServiceRemovalInProgress = true
-        let modeBeforeRemoval = settings.mode
-        let statusBeforeRemoval = controlStatus
         modeRequestGeneration &+= 1
         pendingPrivilegedMode = nil
         pendingPrivilegedGeneration = nil
@@ -193,8 +193,14 @@ final class AppModel: ObservableObject {
         controlStatus = .restoring
         let didRemove = await privilegedServiceRemovalHandler()
         if !didRemove {
-            settings.mode = modeBeforeRemoval
-            controlStatus = statusBeforeRemoval
+            pendingPrivilegedMode = nil
+            pendingPrivilegedGeneration = nil
+            isPrivilegedApprovalPresented = false
+            settings.mode = .systemAuto
+            controlStatus = .failed
+            requiresFreshPrivilegedConfirmation = true
+        } else {
+            requiresFreshPrivilegedConfirmation = false
         }
         isPrivilegedServiceRemovalInProgress = false
     }

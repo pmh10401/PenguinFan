@@ -75,3 +75,40 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 Result: PASS. Release product build completed successfully.
+
+## Fix round 2/5
+
+Addressed the remaining two Important fail-closed findings:
+
+- Removal failures never restore the prior Curve or Manual selection/status.
+- Restore timeout, XPC invalidation, missing coordinator, and unregister failure all leave the selected mode at System with an explicit failed/unknown control status, clear pending privileged mode, and require fresh user confirmation plus a fresh connection before custom control.
+- Restore-stage and unregister-stage failures are recorded separately.
+- A missing restore coordinator now fails closed and skips unregister instead of treating the absence as successful restoration.
+- Unregister failure after verified restore and connection teardown keeps the service registered and never displays the removal-success message.
+- The removal-in-progress UI/runtime race gates and explicit default-OFF legacy fallback remain unchanged.
+
+Focused test command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter Task5
+```
+
+Result: PASS. 10 tests executed, 0 failures.
+
+Deterministic coverage added:
+
+- XPC restore timeout fails closed and skips unregister
+- XPC invalidation fails closed and skips unregister
+- unregister failure after verified teardown remains System/failed and does not claim removal
+- missing coordinator fails closed and skips unregister
+- no failure path restores stale Curve or Manual UI/runtime state
+
+Release build command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result: PASS. Release product build completed successfully.
