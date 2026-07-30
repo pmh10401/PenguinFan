@@ -7,23 +7,62 @@ LOCK_FILE="$ROOT/installer/.PenguinFan-Experimental-1.1.0.publication.lock"
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
+EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
+SIGNING_IDENTITY=""
 
 fail() {
   printf "FAIL: %s\n" "$1" >&2
   exit 1
 }
 
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --signing-identity)
+      [[ "$#" -ge 2 ]] && [[ -n "$2" ]] \
+        || fail "missing value for --signing-identity"
+      SIGNING_IDENTITY="$2"
+      shift
+      ;;
+    *)
+      fail "unknown option: $1"
+      ;;
+  esac
+  shift
+done
+
+[[ -n "$SIGNING_IDENTITY" ]] && [[ "$SIGNING_IDENTITY" != "-" ]] \
+  || fail "an explicit non-ad-hoc signing identity is required"
+
+BUILD_COMMAND=(
+  "$ROOT/script/build_installer.sh"
+  --experimental-helper
+  --signing-identity "$SIGNING_IDENTITY"
+)
+
 plist_value() {
   /usr/bin/plutil -extract "$2" raw -o - "$1"
 }
 
-verify_adhoc_signature() {
+verify_identity_signature() {
   local item="$1"
   local metadata
+  local authority
+  local team_identifier
   /usr/bin/codesign --verify --strict "$item"
-  metadata="$(/usr/bin/codesign -dvv "$item" 2>&1)"
-  [[ "$metadata" == *"Signature=adhoc"* ]] \
-    || fail "expected ad-hoc signature: $item"
+  metadata="$(/usr/bin/codesign -dvvv "$item" 2>&1)"
+  authority="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+  team_identifier="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  [[ "$metadata" != *"Signature=adhoc"* ]] \
+    || fail "ad-hoc signature is forbidden: $item"
+  [[ "$authority" == "$SIGNING_IDENTITY" ]] \
+    || fail "wrong signing Authority: $item"
+  [[ -n "$team_identifier" ]] \
+    && [[ "$team_identifier" == "$EXPECTED_TEAM_IDENTIFIER" ]] \
+    || fail "wrong or missing TeamIdentifier: $item"
+  [[ "$metadata" == *"(runtime)"* ]] \
+    || fail "hardened runtime is missing: $item"
 }
 
 verify_app() {
@@ -59,16 +98,15 @@ verify_app() {
   [[ -x "$app/$EXPECTED_BUNDLE_PROGRAM" ]] \
     || fail "helper executable is missing"
 
-  verify_adhoc_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
-  verify_adhoc_signature "$contents/MacOS/FanControllerApp"
+  verify_identity_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
+  verify_identity_signature "$contents/MacOS/FanControllerApp"
   /usr/bin/codesign --verify --deep --strict "$app"
+  verify_identity_signature "$app"
 
   local app_metadata
-  app_metadata="$(/usr/bin/codesign -dvv "$app" 2>&1)"
+  app_metadata="$(/usr/bin/codesign -dvvv "$app" 2>&1)"
   [[ "$app_metadata" == *"Identifier=com.local.PenguinFan.experimental"* ]] \
     || fail "signed app identifier is wrong"
-  [[ "$app_metadata" == *"Signature=adhoc"* ]] \
-    || fail "app is not ad-hoc signed"
 }
 
 verify_package() {
@@ -149,6 +187,32 @@ wait_for_published_package() {
 
 mkdir -p "$ROOT/installer"
 
+# The rejected PID/static-code fallback must not remain in the source.
+if /usr/bin/grep -Eq \
+  'proc_pidpath|SecStaticCodeCreateWithPath|inspectStaticCode|LiveProcessCodeInspectionError|StaticCodeIdentity|acceptsAdHocFallback|route=fallback' \
+  "$ROOT/Sources/FanControllerAgent/XPCClientValidator.swift"; then
+  fail "unsafe XPC client fallback symbols remain"
+fi
+
+# Missing, ad-hoc, and unavailable identities must fail before the final
+# artifact can be deleted or replaced.
+printf "identity gate sentinel\n" > "$FINAL_PACKAGE"
+for invalid_identity in "" "-" "Missing Signing Identity"; do
+  INVALID_COMMAND=(
+    "$ROOT/script/build_installer.sh"
+    --experimental-helper
+  )
+  if [[ -n "$invalid_identity" ]]; then
+    INVALID_COMMAND+=(--signing-identity "$invalid_identity")
+  fi
+  if "${INVALID_COMMAND[@]}"; then
+    fail "invalid signing identity unexpectedly succeeded"
+  fi
+  [[ "$(/bin/cat "$FINAL_PACKAGE")" == "identity gate sentinel" ]] \
+    || fail "invalid signing identity changed the final artifact"
+done
+/bin/rm -f "$FINAL_PACKAGE"
+
 # A live lock owner protects the existing final artifact. A non-owner must
 # time out without deleting or replacing it.
 /bin/rm -f "$LOCK_FILE"
@@ -156,7 +220,7 @@ mkdir -p "$ROOT/installer"
   || fail "could not create live-owner test lock"
 printf "live owner sentinel\n" > "$FINAL_PACKAGE"
 if PENGUINFAN_TASK6_LOCK_WAIT_SECONDS=1 \
-  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  "${BUILD_COMMAND[@]}"; then
   /bin/rm -f "$LOCK_FILE" "$FINAL_PACKAGE"
   fail "non-owner build unexpectedly acquired a live lock"
 fi
@@ -168,7 +232,7 @@ fi
 # deliberate failure must leave the final path absent.
 printf "999999\n" > "$LOCK_FILE"
 if PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH=1 \
-  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  "${BUILD_COMMAND[@]}"; then
   /bin/rm -f "$FINAL_PACKAGE"
   fail "deliberate pre-publication failure unexpectedly succeeded"
 fi
@@ -183,13 +247,13 @@ assert_no_staging_directories
 A_LOG="$ROOT/.build/task6-concurrency-a.log"
 B_LOG="$ROOT/.build/task6-concurrency-b.log"
 PENGUINFAN_TASK6_HOLD_AFTER_PUBLISH_SECONDS=2 \
-  "$ROOT/script/build_installer.sh" --experimental-helper \
+  "${BUILD_COMMAND[@]}" \
   >"$A_LOG" 2>&1 &
 A_PID=$!
 wait_for_lock_owner "$A_PID"
 
 PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH=1 \
-  "$ROOT/script/build_installer.sh" --experimental-helper \
+  "${BUILD_COMMAND[@]}" \
   >"$B_LOG" 2>&1 &
 B_PID=$!
 
@@ -215,7 +279,7 @@ SIGNAL_BASELINE_SHA="$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
   | /usr/bin/awk '{print $1}')"
 
 if PENGUINFAN_TASK6_SIGNAL_BEFORE_BACKUP_MOVE=1 \
-  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  "${BUILD_COMMAND[@]}"; then
   fail "pre-backup signal injection unexpectedly succeeded"
 fi
 [[ -f "$FINAL_PACKAGE" ]] \
@@ -227,7 +291,7 @@ fi
 assert_no_staging_directories
 
 if PENGUINFAN_TASK6_SIGNAL_AFTER_BACKUP_MOVE=1 \
-  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  "${BUILD_COMMAND[@]}"; then
   fail "post-backup signal injection unexpectedly succeeded"
 fi
 [[ -f "$FINAL_PACKAGE" ]] \
@@ -244,12 +308,12 @@ verify_package "$FINAL_PACKAGE"
 C_LOG="$ROOT/.build/task6-concurrency-c.log"
 D_LOG="$ROOT/.build/task6-concurrency-d.log"
 PENGUINFAN_TASK6_HOLD_LOCK_SECONDS=2 \
-  "$ROOT/script/build_installer.sh" --experimental-helper \
+  "${BUILD_COMMAND[@]}" \
   >"$C_LOG" 2>&1 &
 C_PID=$!
 wait_for_lock_owner "$C_PID"
 
-"$ROOT/script/build_installer.sh" --experimental-helper \
+"${BUILD_COMMAND[@]}" \
   >"$D_LOG" 2>&1 &
 D_PID=$!
 /bin/sleep 0.25
@@ -265,4 +329,4 @@ verify_package "$FINAL_PACKAGE"
 [[ ! -e "$LOCK_FILE" ]] || fail "publication lock remains after success"
 assert_no_staging_directories
 
-printf "Task 6 transactional concurrency and artifact checks passed.\n"
+printf "Task 7 identity-gated transactional and artifact checks passed.\n"

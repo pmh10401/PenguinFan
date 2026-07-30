@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PACKAGE="${1:?experimental package path required}"
+EXPECTED_AUTHORITY="${2:?expected signing Authority required}"
+EXPECTED_TEAM_IDENTIFIER="${3:?expected TeamIdentifier required}"
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
@@ -26,13 +28,26 @@ plist_value() {
   /usr/bin/plutil -extract "$2" raw -o - "$1"
 }
 
-verify_adhoc_signature() {
+verify_identity_signature() {
   local item="$1"
   local metadata
+  local authority
+  local team_identifier
   /usr/bin/codesign --verify --strict "$item"
-  metadata="$(/usr/bin/codesign -dvv "$item" 2>&1)"
-  [[ "$metadata" == *"Signature=adhoc"* ]] \
-    || fail "expected ad-hoc signature: $item"
+  metadata="$(/usr/bin/codesign -dvvv "$item" 2>&1)"
+  authority="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+  team_identifier="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  [[ "$metadata" != *"Signature=adhoc"* ]] \
+    || fail "ad-hoc signature is forbidden: $item"
+  [[ "$authority" == "$EXPECTED_AUTHORITY" ]] \
+    || fail "wrong signing Authority: $item"
+  [[ -n "$team_identifier" ]] \
+    && [[ "$team_identifier" == "$EXPECTED_TEAM_IDENTIFIER" ]] \
+    || fail "wrong or missing TeamIdentifier: $item"
+  [[ "$metadata" == *"(runtime)"* ]] \
+    || fail "hardened runtime is missing: $item"
 }
 
 verify_app() {
@@ -69,14 +84,13 @@ verify_app() {
   [[ -x "$app/$EXPECTED_BUNDLE_PROGRAM" ]] \
     || fail "helper executable is missing"
 
-  verify_adhoc_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
-  verify_adhoc_signature "$contents/MacOS/FanControllerApp"
+  verify_identity_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
+  verify_identity_signature "$contents/MacOS/FanControllerApp"
   /usr/bin/codesign --verify --deep --strict "$app"
-  app_metadata="$(/usr/bin/codesign -dvv "$app" 2>&1)"
+  verify_identity_signature "$app"
+  app_metadata="$(/usr/bin/codesign -dvvv "$app" 2>&1)"
   [[ "$app_metadata" == *"Identifier=com.local.PenguinFan.experimental"* ]] \
     || fail "signed app identifier is wrong"
-  [[ "$app_metadata" == *"Signature=adhoc"* ]] \
-    || fail "app is not ad-hoc signed"
 }
 
 [[ -f "$PACKAGE" ]] || fail "package is missing"

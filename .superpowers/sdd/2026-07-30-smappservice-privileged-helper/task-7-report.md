@@ -856,3 +856,183 @@ PACKAGE_BUILD_EXIT=0
 ```
 
 Artifact SHA-256: `a1b382b6b80dc19ffd9beb167dedc1c3e6a175286e46eebc6d52ee507c257663`.
+
+---
+
+## Security repair round 4/5: strict live code and Personal Team pinning
+
+Validation date: 2026-07-30 KST.
+
+The rejected ad-hoc PID/path/static-code fallback from commit `0922fec` was
+removed completely. Listener admission now fails closed unless
+`SecCodeCopyGuestWithAttributes` returns a valid live guest whose
+live-derived signing information contains the exact executable path, signing
+identifier, and Personal Team identifier. The existing console effective UID,
+root ownership, immutable group/other modes, object-kind, and extended ACL
+checks remain required.
+
+No app or package was installed. The stable app, stable package/release assets,
+marketing files, and unrelated untracked files were not modified.
+
+### Signing identity probe and discovered TeamIdentifier
+
+Commands:
+
+```bash
+/usr/bin/security find-identity -v -p codesigning
+probe_dir=$(/usr/bin/mktemp -d /tmp/penguinfan-signing-probe.XXXXXX)
+/bin/cp /usr/bin/true "$probe_dir/probe"
+/usr/bin/codesign --force \
+  --sign 'Apple Development: pmh10401@gmail.com (33KJJV566T)' \
+  --options runtime --timestamp=none "$probe_dir/probe"
+/usr/bin/codesign --verify --strict --verbose=2 "$probe_dir/probe"
+/usr/bin/codesign -d --verbose=4 "$probe_dir/probe"
+```
+
+Result:
+
+```text
+D10DD321B33EAB9C02DB2BEB29E077986032B04E
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+CodeDirectory flags=0x10000(runtime)
+probe: valid on disk
+probe: satisfies its Designated Requirement
+```
+
+The discovered and pinned TeamIdentifier is `UUUQNVQ67B`. It was taken from
+the signed probe's actual `codesign` metadata; the certificate common-name
+suffix `33KJJV566T` was not treated as the Team ID.
+
+### Validator and full test suites
+
+Commands:
+
+```bash
+/usr/bin/env bash -n \
+  script/build_and_run.sh \
+  script/build_installer.sh \
+  script/validate_experimental_package.sh \
+  script/test_experimental_packaging.sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test \
+  --filter 'AgentServerTests/testXPCClientValidator'
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test
+```
+
+Results:
+
+```text
+Shell syntax validation: exit 0
+Selected AgentServerTests: 7 tests, 0 failures
+All tests: 101 tests, 0 failures
+```
+
+The focused validator cases cover exact identity success plus effective UID,
+executable path, signing identifier, missing TeamIdentifier, wrong
+TeamIdentifier, unavailable/invalid live code, root ownership, immutable
+modes, expected object kinds, unsafe ACLs, and every protected installation
+ancestor through `/Applications`.
+
+### Release builds
+
+Commands:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerAgent
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Results:
+
+```text
+Build of product 'FanControllerAgent' complete
+Build of product 'FanControllerApp' complete
+RELEASE_BUILDS_EXIT=0
+```
+
+### Transactional signing and executable artifact tests
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+```
+
+Result:
+
+```text
+missing identity: rejected before final artifact mutation
+ad-hoc identity "-": rejected before final artifact mutation
+unavailable identity: rejected before final artifact mutation
+live-lock timeout preserved the existing artifact
+injected pre-publication failure preserved transactional state
+concurrent and signal-injection publication checks passed
+Task 7 identity-gated transactional and artifact checks passed.
+```
+
+The executable artifact checks expand the package and verify the helper, main
+executable, and app with `codesign --strict` and the app with
+`codesign --deep --strict`. All three report:
+
+```text
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+CodeDirectory flags include runtime
+Signature=adhoc absent
+```
+
+The tests also prove that the package contains only
+`Applications/PenguinFan Experimental.app`, contains no stable or legacy app
+path, and that `proc_pidpath`, path-created `SecStaticCode`, fallback identity
+types/functions, and fallback-route logging symbols are absent from the
+validator source.
+
+### Final experimental package regeneration
+
+Commands:
+
+```bash
+./script/build_installer.sh \
+  --experimental-helper \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+./script/validate_experimental_package.sh \
+  installer/PenguinFan-Experimental-1.1.0.pkg \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)' \
+  UUUQNVQ67B
+/usr/bin/shasum -a 256 \
+  installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete
+Build of product 'FanControllerAgent' complete
+Build of product 'FanDiagnostics' complete
+Validated experimental package: staging package
+Built installer: installer/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: installer/PenguinFan-Experimental-1.1.0.pkg
+2ef6fe24862ac6ae8d9bce8fb18326a3d873afe2d9bc958c12a351ee53262375
+```
+
+Artifact:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+SHA-256: 2ef6fe24862ac6ae8d9bce8fb18326a3d873afe2d9bc958c12a351ee53262375
+```
+
+### Local-only limitation
+
+This package embeds code signed by a local Apple Development Personal Team
+identity from this Mac's keychain. It is not Developer ID signed, installer
+signed, notarized, or suitable for public distribution. Rebuilding requires
+the same valid local identity and exact TeamIdentifier policy. The artifact
+remains Experimental-only and was not installed.

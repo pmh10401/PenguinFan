@@ -5,27 +5,87 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="1.0.12"
 VERSION_WAS_SET=0
 EXPERIMENTAL_HELPER=0
+SIGNING_IDENTITY=""
+EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
 
-for argument in "$@"; do
-  case "$argument" in
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
     --experimental-helper)
       EXPERIMENTAL_HELPER=1
       ;;
+    --signing-identity)
+      [[ "$#" -ge 2 ]] && [[ -n "$2" ]] \
+        || { echo "Missing value for --signing-identity." >&2; exit 64; }
+      SIGNING_IDENTITY="$2"
+      shift
+      ;;
     [0-9]*)
       if [[ "$VERSION_WAS_SET" -eq 1 ]] \
-        || [[ ! "$argument" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-        printf 'Invalid version: %s\n' "$argument" >&2
+        || [[ ! "$1" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+        printf 'Invalid version: %s\n' "$1" >&2
         exit 64
       fi
-      VERSION="$argument"
+      VERSION="$1"
       VERSION_WAS_SET=1
       ;;
     *)
-      printf 'Unknown option: %s\n' "$argument" >&2
+      printf 'Unknown option: %s\n' "$1" >&2
       exit 64
       ;;
   esac
+  shift
 done
+
+validate_signing_identity() {
+  local identity="$1"
+  local expected_team="$2"
+  local probe_dir
+  local probe
+  local metadata
+  local authority
+  local team_identifier
+
+  if [[ -z "$identity" ]] || [[ "$identity" == "-" ]]; then
+    echo "Experimental packaging requires an explicit non-ad-hoc signing identity." >&2
+    return 1
+  fi
+  if ! /usr/bin/security find-identity -v -p codesigning \
+    | /usr/bin/awk -F'"' -v expected="$identity" \
+      '$2 == expected { found = 1 } END { exit(found ? 0 : 1) }'; then
+    printf 'Signing identity is unavailable or invalid: %s\n' "$identity" >&2
+    return 1
+  fi
+
+  mkdir -p "$ROOT/.build"
+  probe_dir="$(/usr/bin/mktemp -d \
+    "$ROOT/.build/experimental-signing-probe.XXXXXX")"
+  probe="$probe_dir/probe"
+  /bin/cp /usr/bin/true "$probe"
+  if ! /usr/bin/codesign --force --options runtime --timestamp=none \
+    --sign "$identity" "$probe" >/dev/null 2>&1 \
+    || ! /usr/bin/codesign --verify --strict "$probe" >/dev/null 2>&1; then
+    /bin/rm -rf "$probe_dir"
+    printf 'Signing identity failed a signed probe: %s\n' "$identity" >&2
+    return 1
+  fi
+
+  metadata="$(/usr/bin/codesign -dvvv "$probe" 2>&1)"
+  authority="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+  team_identifier="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  /bin/rm -rf "$probe_dir"
+
+  if [[ "$metadata" == *"Signature=adhoc"* ]] \
+    || [[ "$authority" != "$identity" ]] \
+    || [[ -z "$team_identifier" ]] \
+    || [[ "$team_identifier" != "$expected_team" ]] \
+    || [[ "$metadata" != *"(runtime)"* ]]; then
+    printf 'Signing identity metadata did not match the experimental policy: %s\n' \
+      "$identity" >&2
+    return 1
+  fi
+}
 
 if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   if [[ "$VERSION_WAS_SET" -eq 1 ]]; then
@@ -47,6 +107,9 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   PUBLISHED=0
   STAGING_DIR=""
   PRIOR_VALID_PACKAGE=""
+
+  validate_signing_identity \
+    "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" || exit 64
 
   if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
     || [[ "$LOCK_WAIT_SECONDS" -gt 600 ]]; then
@@ -120,7 +183,9 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
 
   if [[ -f "$FINAL_PACKAGE" ]]; then
     if "$ROOT/script/validate_experimental_package.sh" \
-      "$FINAL_PACKAGE" >/dev/null; then
+      "$FINAL_PACKAGE" \
+      "$SIGNING_IDENTITY" \
+      "$EXPECTED_TEAM_IDENTIFIER" >/dev/null; then
       PRIOR_PACKAGE_KNOWN_GOOD=1
       PUBLICATION_STATE_MANAGED=1
 
@@ -145,8 +210,14 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
 
   FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
     "$ROOT/script/build_and_run.sh" \
-      --experimental-helper --verify
+      --experimental-helper \
+      --signing-identity "$SIGNING_IDENTITY" \
+      --verify
 else
+  if [[ -n "$SIGNING_IDENTITY" ]]; then
+    echo "--signing-identity is supported only with --experimental-helper." >&2
+    exit 64
+  fi
   APP_BUNDLE_NAME="PenguinFan.app"
   PACKAGE_NAME="PenguinFan-$VERSION.pkg"
   PACKAGE_IDENTIFIER="com.local.M2MaxFanController"
@@ -244,23 +315,40 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   /usr/bin/codesign --verify --strict "$MAIN_EXECUTABLE"
   /usr/bin/codesign --verify --deep --strict "$APP"
 
-  HELPER_SIGNATURE="$(/usr/bin/codesign -dvv \
-    "$HELPER_EXECUTABLE" 2>&1)"
-  MAIN_SIGNATURE="$(/usr/bin/codesign -dvv \
+  verify_identity_signature() {
+    local item="$1"
+    local metadata
+    local authority
+    local team_identifier
+
+    metadata="$(/usr/bin/codesign -dvvv "$item" 2>&1)"
+    authority="$(printf '%s\n' "$metadata" \
+      | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+    team_identifier="$(printf '%s\n' "$metadata" \
+      | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+    [[ "$metadata" != *"Signature=adhoc"* ]] \
+      || { echo "Experimental item is ad-hoc signed: $item" >&2; exit 1; }
+    [[ "$authority" == "$SIGNING_IDENTITY" ]] \
+      || { echo "Signing Authority verification failed: $item" >&2; exit 1; }
+    [[ -n "$team_identifier" ]] \
+      && [[ "$team_identifier" == "$EXPECTED_TEAM_IDENTIFIER" ]] \
+      || { echo "TeamIdentifier verification failed: $item" >&2; exit 1; }
+    [[ "$metadata" == *"(runtime)"* ]] \
+      || { echo "Hardened runtime verification failed: $item" >&2; exit 1; }
+  }
+
+  MAIN_SIGNATURE="$(/usr/bin/codesign -dvvv \
     "$MAIN_EXECUTABLE" 2>&1)"
-  APP_SIGNATURE="$(/usr/bin/codesign -dvv "$APP" 2>&1)"
-  [[ "$HELPER_SIGNATURE" == *"Signature=adhoc"* ]] \
-    || { echo "Experimental helper is not ad-hoc signed." >&2; exit 1; }
+  APP_SIGNATURE="$(/usr/bin/codesign -dvvv "$APP" 2>&1)"
+  verify_identity_signature "$HELPER_EXECUTABLE"
+  verify_identity_signature "$MAIN_EXECUTABLE"
+  verify_identity_signature "$APP"
   [[ "$MAIN_SIGNATURE" == \
     *"Identifier=com.local.PenguinFan.experimental"* ]] \
     || { echo "Signed main identifier verification failed." >&2; exit 1; }
-  [[ "$MAIN_SIGNATURE" == *"Signature=adhoc"* ]] \
-    || { echo "Experimental main is not ad-hoc signed." >&2; exit 1; }
   [[ "$APP_SIGNATURE" == \
     *"Identifier=com.local.PenguinFan.experimental"* ]] \
     || { echo "Signed app identifier verification failed." >&2; exit 1; }
-  [[ "$APP_SIGNATURE" == *"Signature=adhoc"* ]] \
-    || { echo "Experimental app is not ad-hoc signed." >&2; exit 1; }
 
   PAYLOAD="$(/usr/sbin/pkgutil --payload-files "$PACKAGE")"
   FOUND_MAIN=0
@@ -293,7 +381,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   [[ "$FOUND_DAEMON_PLIST" -eq 1 ]] \
     || { echo "Installer payload is missing the LaunchDaemon plist." >&2; exit 1; }
 
-  "$ROOT/script/validate_experimental_package.sh" "$PACKAGE"
+  "$ROOT/script/validate_experimental_package.sh" \
+    "$PACKAGE" "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER"
   NEW_PACKAGE_KNOWN_GOOD=1
 
   if [[ "${PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH:-0}" == "1" ]]; then

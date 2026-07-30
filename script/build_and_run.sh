@@ -7,6 +7,8 @@ SHOULD_LAUNCH=1
 SHOW_LOGS=0
 TELEMETRY=0
 EXPERIMENTAL_HELPER=0
+SIGNING_IDENTITY=""
+EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
 BUNDLE_ID="${FAN_CONTROLLER_BUNDLE_ID:-com.local.M2MaxFanController.dev}"
 APP_VERSION="${FAN_CONTROLLER_VERSION:-1.0.12}"
 BUILD_NUMBER="${FAN_CONTROLLER_BUILD_NUMBER:-13}"
@@ -15,8 +17,8 @@ APP_BUNDLE_NAME="PenguinFan.app"
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 
-for argument in "$@"; do
-  case "$argument" in
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
     run)
       SHOULD_LAUNCH=1
       ;;
@@ -35,19 +37,33 @@ for argument in "$@"; do
     --experimental-helper)
       EXPERIMENTAL_HELPER=1
       ;;
+    --signing-identity)
+      [[ "$#" -ge 2 ]] && [[ -n "$2" ]] \
+        || { echo "Missing value for --signing-identity." >&2; exit 64; }
+      SIGNING_IDENTITY="$2"
+      shift
+      ;;
     *)
-      printf 'Unknown option: %s\n' "$argument" >&2
+      printf 'Unknown option: %s\n' "$1" >&2
       exit 64
       ;;
   esac
+  shift
 done
 
 if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  if [[ -z "$SIGNING_IDENTITY" ]] || [[ "$SIGNING_IDENTITY" == "-" ]]; then
+    echo "Experimental builds require an explicit non-ad-hoc signing identity." >&2
+    exit 64
+  fi
   BUNDLE_ID="com.local.PenguinFan.experimental"
   APP_VERSION="1.1.0"
   BUILD_NUMBER="14"
   APP_DISPLAY_NAME="PenguinFan Experimental"
   APP_BUNDLE_NAME="PenguinFan Experimental.app"
+elif [[ -n "$SIGNING_IDENTITY" ]]; then
+  echo "--signing-identity is supported only with --experimental-helper." >&2
+  exit 64
 fi
 
 export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -158,10 +174,24 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 xattr -cr "$APP"
-/usr/bin/codesign --force --sign - "$CONTENTS/Helpers/FanControllerAgent"
-/usr/bin/codesign --force --sign - "$CONTENTS/Helpers/FanDiagnostics"
-/usr/bin/codesign --force --sign - "$CONTENTS/MacOS/FanControllerApp"
-/usr/bin/codesign --force --sign - "$APP"
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  SIGNING_ARGUMENTS=(
+    --force
+    --options runtime
+    --timestamp=none
+    --sign "$SIGNING_IDENTITY"
+  )
+else
+  SIGNING_ARGUMENTS=(--force --sign -)
+fi
+
+/usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
+  "$CONTENTS/Helpers/FanControllerAgent"
+/usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
+  "$CONTENTS/Helpers/FanDiagnostics"
+/usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
+  "$CONTENTS/MacOS/FanControllerApp"
+/usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" "$APP"
 
 test -x "$CONTENTS/MacOS/FanControllerApp"
 test -x "$CONTENTS/Helpers/FanControllerAgent"
@@ -181,8 +211,29 @@ for signed_item in \
   "$CONTENTS/Helpers/FanControllerAgent" \
   "$CONTENTS/MacOS/FanControllerApp" \
   "$APP"; do
-  SIGNATURE_INFO="$(/usr/bin/codesign -dvv "$signed_item" 2>&1)"
-  if [[ "$SIGNATURE_INFO" != *"Signature=adhoc"* ]]; then
+  SIGNATURE_INFO="$(/usr/bin/codesign -dvvv "$signed_item" 2>&1)"
+  if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+    if [[ "$SIGNATURE_INFO" == *"Signature=adhoc"* ]]; then
+      echo "Experimental item is ad-hoc signed: $signed_item" >&2
+      exit 1
+    fi
+    SIGNED_TEAM_IDENTIFIER="$(printf '%s\n' "$SIGNATURE_INFO" \
+      | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+    SIGNED_AUTHORITY="$(printf '%s\n' "$SIGNATURE_INFO" \
+      | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+    if [[ "$SIGNED_TEAM_IDENTIFIER" != "$EXPECTED_TEAM_IDENTIFIER" ]]; then
+      echo "Unexpected TeamIdentifier for $signed_item" >&2
+      exit 1
+    fi
+    if [[ "$SIGNED_AUTHORITY" != "$SIGNING_IDENTITY" ]]; then
+      echo "Unexpected signing Authority for $signed_item" >&2
+      exit 1
+    fi
+    if [[ "$SIGNATURE_INFO" != *"(runtime)"* ]]; then
+      echo "Hardened runtime is missing for $signed_item" >&2
+      exit 1
+    fi
+  elif [[ "$SIGNATURE_INFO" != *"Signature=adhoc"* ]]; then
     echo "Expected ad-hoc signature: $signed_item" >&2
     exit 1
   fi
