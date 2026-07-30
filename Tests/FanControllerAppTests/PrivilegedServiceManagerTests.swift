@@ -165,7 +165,12 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             },
             timeoutScheduler: timeoutScheduler
         )
+        let requestsCompleted = expectation(
+            description: "Both pending requests complete"
+        )
+        requestsCompleted.expectedFulfillmentCount = 2
         let first = Task.detached {
+            defer { requestsCompleted.fulfill() }
             do {
                 _ = try await client.send(.heartbeat)
                 return Optional<XPCControlClientError>.none
@@ -174,6 +179,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             }
         }
         let second = Task.detached {
+            defer { requestsCompleted.fulfill() }
             do {
                 _ = try await client.send(.heartbeat)
                 return Optional<XPCControlClientError>.none
@@ -204,8 +210,20 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         timeoutScheduler.fireFirst()
 
+        let completionResult = await XCTWaiter.fulfillment(
+            of: [requestsCompleted],
+            timeout: 1
+        )
+        if completionResult != .completed {
+            connection.invalidate()
+        }
         let firstError = await first.value
         let secondError = await second.value
+        XCTAssertEqual(
+            completionResult,
+            .completed,
+            "One timeout must complete every pending request."
+        )
         XCTAssertEqual(firstError, .timedOut)
         XCTAssertEqual(secondError, .timedOut)
         XCTAssertEqual(connection.invalidateCallCount, 1)
