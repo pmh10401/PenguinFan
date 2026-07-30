@@ -19,11 +19,11 @@ struct FilesystemSecurityMetadata: Sendable {
 
 public final class XPCClientValidator: @unchecked Sendable {
     static let requiredBundlePath =
-        "/Applications/PenguinFan Experimental.app"
+        "/Applications/PenguinFan.app"
     static let requiredExecutablePath =
-        "/Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp"
+        "/Applications/PenguinFan.app/Contents/MacOS/FanControllerApp"
     static let requiredSigningIdentifier =
-        "com.local.PenguinFan.experimental"
+        "com.local.PenguinFan"
     static let requiredTeamIdentifier = "UUUQNVQ67B"
 
     typealias SecurityIdentity = (
@@ -45,7 +45,7 @@ public final class XPCClientValidator: @unchecked Sendable {
     ]
 
     private static let logger = Logger(
-        subsystem: "com.local.PenguinFan.experimental",
+        subsystem: "com.local.PenguinFan",
         category: "XPCValidation"
     )
 

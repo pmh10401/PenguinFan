@@ -3,7 +3,7 @@ import Foundation
 
 public final class AgentXPCService: NSObject, FanControllerXPCProtocol {
     public static let machServiceName =
-        "com.local.PenguinFan.experimental.agent"
+        "com.local.PenguinFan.agent"
     public static let maximumRequestSize =
         ControlProtocolCodec.maximumMessageSize
 

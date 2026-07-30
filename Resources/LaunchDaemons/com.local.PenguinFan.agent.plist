@@ -3,18 +3,18 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.local.PenguinFan.experimental.agent</string>
+  <string>com.local.PenguinFan.agent</string>
   <key>BundleProgram</key>
   <string>Contents/Helpers/FanControllerAgent</string>
   <key>MachServices</key>
   <dict>
-    <key>com.local.PenguinFan.experimental.agent</key>
+    <key>com.local.PenguinFan.agent</key>
     <true/>
   </dict>
   <key>SpawnConstraint</key>
   <dict>
     <key>signing-identifier</key>
-    <string>com.local.PenguinFan.experimental.agent</string>
+    <string>com.local.PenguinFan.agent</string>
     <key>team-identifier</key>
     <string>UUUQNVQ67B</string>
     <key>validation-category</key>

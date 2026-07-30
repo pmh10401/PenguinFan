@@ -34,7 +34,7 @@ extension SMAppService: PrivilegedServiceRegistering {}
 @MainActor
 final class PrivilegedServiceManager {
     static let daemonPlistName =
-        "com.local.PenguinFan.experimental.agent.plist"
+        "com.local.PenguinFan.agent.plist"
 
     private(set) var state: PrivilegedServiceState
     private(set) var lastUnregisterFailure:
@@ -233,7 +233,7 @@ private struct DispatchXPCRequestTimeoutScheduler:
 
 final class XPCControlClient: ControlClient, @unchecked Sendable {
     static let machServiceName =
-        "com.local.PenguinFan.experimental.agent"
+        "com.local.PenguinFan.agent"
 
     private typealias Continuation =
         CheckedContinuation<ControlResult, Error>
