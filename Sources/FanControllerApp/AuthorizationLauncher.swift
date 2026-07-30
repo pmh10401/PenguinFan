@@ -76,6 +76,8 @@ actor AuthorizationLauncher {
                 socketURL,
                 ownerUID: getuid()
             ) {
+                process.terminate()
+                self.process = nil
                 return socketURL
             }
             if !process.isRunning {
