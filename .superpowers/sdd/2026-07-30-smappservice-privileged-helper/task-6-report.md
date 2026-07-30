@@ -127,3 +127,65 @@ Regenerated artifact:
 `/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
 
 SHA-256: `4179e830359693c28cdfa01924b06f017736f7341d838e63903cf710a5d473af`
+
+## Fix round 2/5: concurrent publication lock
+
+### RED evidence
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Before lock implementation, a build ignored a live lock owned by the test,
+published over its sentinel, and failed with:
+
+```text
+FAIL: non-owner build unexpectedly acquired a live lock
+ROUND2_RED_EXIT=1
+```
+
+### Final focused concurrency and package run
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Result: exit 0. Key output:
+
+```text
+Timed out waiting 1 seconds for package publication lock.
+Validated experimental package: <unique staging>/PenguinFan-Experimental-1.1.0.pkg
+Injected Task 6 failure before package publication.
+Task 6 transactional concurrency and artifact checks passed.
+```
+
+The focused run covered:
+
+- live-owner bounded timeout: the non-owner neither removed nor replaced the
+  owner's sentinel artifact
+- dead-PID stale lock recovery through macOS `shlock`, without breaking a
+  live owner
+- single-build injected failure with no prior artifact: final path absent and
+  staging/lock cleaned
+- A success while B waited and failed: B quarantined and restored A's fully
+  validated package, preserving its SHA-256
+- two simultaneous successful attempts: the second remained blocked while the
+  first PID owned the lock, then both completed serially
+- final package expanded and revalidated for Info.plist, LaunchDaemon keys and
+  path, executable presence, strict/deep ad-hoc signatures, signed identifier,
+  payload allowlist, and absence of stable/legacy app paths
+
+The publication lock covers prior-artifact validation/quarantine, all staging
+work, validation-to-rename, failure restoration, and cleanup. Default bounded
+wait is 120 seconds (configurable from 1 through 600 seconds for diagnostics and
+tests). Unique staging remains per process. No install or launch was performed.
+
+Regenerated artifact:
+
+`/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
+
+SHA-256: `889cc29e3eaeb794ef074d8fde9640d4f094765093757da7ebc8142306412614`

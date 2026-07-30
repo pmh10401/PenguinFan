@@ -38,25 +38,80 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   PACKAGE_IDENTIFIER="com.local.PenguinFan.experimental"
   OUTPUT_DIR="$ROOT/installer"
   FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
+  LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+  LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"
+  LOCK_OWNED=0
+  PUBLICATION_STATE_MANAGED=0
+  PUBLISHED=0
+  STAGING_DIR=""
+  PRIOR_VALID_PACKAGE=""
+
+  if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+    || [[ "$LOCK_WAIT_SECONDS" -gt 600 ]]; then
+    echo "Lock wait must be an integer from 1 through 600 seconds." >&2
+    exit 64
+  fi
+
   mkdir -p "$OUTPUT_DIR"
-  rm -f "$FINAL_PACKAGE"
+
+  cleanup_experimental_publication() {
+    local result=$?
+
+    trap - EXIT INT TERM
+    if [[ "$LOCK_OWNED" -eq 1 ]] \
+      && [[ "$(/bin/cat "$LOCK_FILE" 2>/dev/null || true)" == "$$" ]]; then
+      if [[ "$PUBLICATION_STATE_MANAGED" -eq 1 ]] \
+        && [[ "$PUBLISHED" -ne 1 ]]; then
+        /bin/rm -f "$FINAL_PACKAGE"
+        if [[ -n "$PRIOR_VALID_PACKAGE" ]] \
+          && [[ -f "$PRIOR_VALID_PACKAGE" ]]; then
+          /bin/mv "$PRIOR_VALID_PACKAGE" "$FINAL_PACKAGE"
+        fi
+      fi
+      /bin/rm -f "$LOCK_FILE"
+    fi
+
+    if [[ -n "$STAGING_DIR" ]]; then
+      /bin/rm -rf "$STAGING_DIR"
+    fi
+    exit "$result"
+  }
+
+  trap cleanup_experimental_publication EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  LOCK_DEADLINE=$((SECONDS + LOCK_WAIT_SECONDS))
+  while ! /usr/bin/shlock -p "$$" -f "$LOCK_FILE" 2>/dev/null; do
+    if [[ "$SECONDS" -ge "$LOCK_DEADLINE" ]]; then
+      printf 'Timed out waiting %s seconds for package publication lock.\n' \
+        "$LOCK_WAIT_SECONDS" >&2
+      exit 73
+    fi
+    /bin/sleep 0.1
+  done
+  LOCK_OWNED=1
+
+  if [[ -n "${PENGUINFAN_TASK6_HOLD_LOCK_SECONDS:-}" ]]; then
+    /bin/sleep "$PENGUINFAN_TASK6_HOLD_LOCK_SECONDS"
+  fi
 
   STAGING_DIR="$(/usr/bin/mktemp -d \
     "$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.staging.XXXXXX")"
-  PUBLISHED=0
+  PRIOR_VALID_PACKAGE="$STAGING_DIR/prior-validated-package.pkg"
 
-  cleanup_experimental_staging() {
-    local result=$?
-    /bin/rm -rf "$STAGING_DIR"
-    if [[ "$PUBLISHED" -ne 1 ]]; then
+  if [[ -f "$FINAL_PACKAGE" ]]; then
+    if "$ROOT/script/validate_experimental_package.sh" \
+      "$FINAL_PACKAGE" >/dev/null; then
+      /bin/mv "$FINAL_PACKAGE" "$PRIOR_VALID_PACKAGE"
+    else
       /bin/rm -f "$FINAL_PACKAGE"
+      PRIOR_VALID_PACKAGE=""
     fi
-    return "$result"
-  }
-
-  trap cleanup_experimental_staging EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  else
+    PRIOR_VALID_PACKAGE=""
+  fi
+  PUBLICATION_STATE_MANAGED=1
 
   FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
     "$ROOT/script/build_and_run.sh" \
@@ -208,6 +263,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   [[ "$FOUND_DAEMON_PLIST" -eq 1 ]] \
     || { echo "Installer payload is missing the LaunchDaemon plist." >&2; exit 1; }
 
+  "$ROOT/script/validate_experimental_package.sh" "$PACKAGE"
+
   if [[ "${PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH:-0}" == "1" ]]; then
     echo "Injected Task 6 failure before package publication." >&2
     exit 75
@@ -216,6 +273,10 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   /bin/mv "$PACKAGE" "$FINAL_PACKAGE"
   PUBLISHED=1
   PACKAGE="$FINAL_PACKAGE"
+
+  if [[ -n "${PENGUINFAN_TASK6_HOLD_AFTER_PUBLISH_SECONDS:-}" ]]; then
+    /bin/sleep "$PENGUINFAN_TASK6_HOLD_AFTER_PUBLISH_SECONDS"
+  fi
 else
   if /usr/sbin/pkgutil --payload-files "$PACKAGE" \
     | /usr/bin/grep -Eq '^\.?/?Applications/FanController\.app'; then

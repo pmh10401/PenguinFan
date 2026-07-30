@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FINAL_PACKAGE="$ROOT/installer/PenguinFan-Experimental-1.1.0.pkg"
+LOCK_FILE="$ROOT/installer/.PenguinFan-Experimental-1.1.0.publication.lock"
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
@@ -123,9 +124,49 @@ assert_no_staging_directories() {
   fi
 }
 
-mkdir -p "$ROOT/installer"
-printf "stale package must never survive\n" > "$FINAL_PACKAGE"
+wait_for_lock_owner() {
+  local expected_pid="$1"
+  local attempt
+  for attempt in {1..200}; do
+    if [[ -f "$LOCK_FILE" ]] \
+      && [[ "$(/bin/cat "$LOCK_FILE" 2>/dev/null || true)" == \
+        "$expected_pid" ]]; then
+      return 0
+    fi
+    /bin/sleep 0.05
+  done
+  fail "timed out waiting for publication lock owner $expected_pid"
+}
 
+wait_for_published_package() {
+  local attempt
+  for attempt in {1..200}; do
+    [[ ! -f "$FINAL_PACKAGE" ]] || return 0
+    /bin/sleep 0.05
+  done
+  fail "timed out waiting for published package"
+}
+
+mkdir -p "$ROOT/installer"
+
+# A live lock owner protects the existing final artifact. A non-owner must
+# time out without deleting or replacing it.
+/bin/rm -f "$LOCK_FILE"
+/usr/bin/shlock -p "$$" -f "$LOCK_FILE" \
+  || fail "could not create live-owner test lock"
+printf "live owner sentinel\n" > "$FINAL_PACKAGE"
+if PENGUINFAN_TASK6_LOCK_WAIT_SECONDS=1 \
+  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  /bin/rm -f "$LOCK_FILE" "$FINAL_PACKAGE"
+  fail "non-owner build unexpectedly acquired a live lock"
+fi
+[[ "$(/bin/cat "$FINAL_PACKAGE")" == "live owner sentinel" ]] \
+  || fail "non-owner modified the live owner's final artifact"
+/bin/rm -f "$LOCK_FILE" "$FINAL_PACKAGE"
+
+# A dead PID lock is stale and may be recovered. With no prior valid artifact,
+# deliberate failure must leave the final path absent.
+printf "999999\n" > "$LOCK_FILE"
 if PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH=1 \
   "$ROOT/script/build_installer.sh" --experimental-helper; then
   /bin/rm -f "$FINAL_PACKAGE"
@@ -134,11 +175,64 @@ fi
 
 [[ ! -e "$FINAL_PACKAGE" ]] \
   || fail "final package remains after deliberate failure"
+[[ ! -e "$LOCK_FILE" ]] || fail "publication lock remains after failure"
 assert_no_staging_directories
 
-"$ROOT/script/build_installer.sh" --experimental-helper
+# A publishes successfully while B waits and then fails. B must restore A's
+# validated package rather than removing it.
+A_LOG="$ROOT/.build/task6-concurrency-a.log"
+B_LOG="$ROOT/.build/task6-concurrency-b.log"
+PENGUINFAN_TASK6_HOLD_AFTER_PUBLISH_SECONDS=2 \
+  "$ROOT/script/build_installer.sh" --experimental-helper \
+  >"$A_LOG" 2>&1 &
+A_PID=$!
+wait_for_lock_owner "$A_PID"
 
+PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH=1 \
+  "$ROOT/script/build_installer.sh" --experimental-helper \
+  >"$B_LOG" 2>&1 &
+B_PID=$!
+
+wait_for_published_package
+A_SHA="$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
+  | /usr/bin/awk '{print $1}')"
+wait "$A_PID" || fail "concurrent build A failed"
+if wait "$B_PID"; then
+  fail "concurrent build B unexpectedly succeeded"
+fi
+
+[[ -f "$FINAL_PACKAGE" ]] \
+  || fail "B removed A's validated package"
+[[ "$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
+  | /usr/bin/awk '{print $1}')" == "$A_SHA" ]] \
+  || fail "B replaced A's validated package"
 verify_package "$FINAL_PACKAGE"
 assert_no_staging_directories
 
-printf "Task 6 executable artifact and failure-path checks passed.\n"
+# Two successful simultaneous attempts must serialize. D remains waiting while
+# C owns the lock; afterward the final package must be one complete artifact.
+C_LOG="$ROOT/.build/task6-concurrency-c.log"
+D_LOG="$ROOT/.build/task6-concurrency-d.log"
+PENGUINFAN_TASK6_HOLD_LOCK_SECONDS=2 \
+  "$ROOT/script/build_installer.sh" --experimental-helper \
+  >"$C_LOG" 2>&1 &
+C_PID=$!
+wait_for_lock_owner "$C_PID"
+
+"$ROOT/script/build_installer.sh" --experimental-helper \
+  >"$D_LOG" 2>&1 &
+D_PID=$!
+/bin/sleep 0.25
+[[ "$(/bin/cat "$LOCK_FILE")" == "$C_PID" ]] \
+  || fail "second simultaneous build displaced the live lock owner"
+/bin/kill -0 "$D_PID" \
+  || fail "second simultaneous build did not wait for the lock"
+
+wait "$C_PID" || fail "simultaneous build C failed"
+wait "$D_PID" || fail "simultaneous build D failed"
+
+verify_package "$FINAL_PACKAGE"
+[[ ! -e "$LOCK_FILE" ]] || fail "publication lock remains after success"
+assert_no_staging_directories
+
+printf "Task 6 transactional concurrency and artifact checks passed.\n"

@@ -1,0 +1,125 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PACKAGE="${1:?experimental package path required}"
+HELPER_LABEL="com.local.PenguinFan.experimental.agent"
+HELPER_PLIST_NAME="$HELPER_LABEL.plist"
+EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
+EXPANDED_PARENT=""
+
+fail() {
+  printf "Experimental package validation failed: %s\n" "$1" >&2
+  exit 1
+}
+
+cleanup() {
+  local result=$?
+  if [[ -n "$EXPANDED_PARENT" ]]; then
+    /bin/rm -rf "$EXPANDED_PARENT"
+  fi
+  return "$result"
+}
+trap cleanup EXIT
+
+plist_value() {
+  /usr/bin/plutil -extract "$2" raw -o - "$1"
+}
+
+verify_adhoc_signature() {
+  local item="$1"
+  local metadata
+  /usr/bin/codesign --verify --strict "$item"
+  metadata="$(/usr/bin/codesign -dvv "$item" 2>&1)"
+  [[ "$metadata" == *"Signature=adhoc"* ]] \
+    || fail "expected ad-hoc signature: $item"
+}
+
+verify_app() {
+  local app="$1"
+  local contents="$app/Contents"
+  local info="$contents/Info.plist"
+  local daemon_plist="$contents/Library/LaunchDaemons/$HELPER_PLIST_NAME"
+  local app_metadata
+
+  [[ -d "$app" ]] || fail "experimental app is missing"
+  [[ "$(plist_value "$info" CFBundleIdentifier)" == \
+    "com.local.PenguinFan.experimental" ]] || fail "wrong bundle identifier"
+  [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.1.0" ]] \
+    || fail "wrong app version"
+  [[ "$(plist_value "$info" CFBundleVersion)" == "14" ]] \
+    || fail "wrong build number"
+  [[ "$(plist_value "$info" CFBundleDisplayName)" == \
+    "PenguinFan Experimental" ]] || fail "wrong display name"
+
+  [[ -f "$daemon_plist" ]] || fail "embedded LaunchDaemon plist is missing"
+  /usr/bin/plutil -lint "$daemon_plist" >/dev/null
+  [[ "$(plist_value "$daemon_plist" Label)" == "$HELPER_LABEL" ]] \
+    || fail "wrong LaunchDaemon label"
+  [[ "$(plist_value "$daemon_plist" BundleProgram)" == \
+    "$EXPECTED_BUNDLE_PROGRAM" ]] || fail "wrong BundleProgram"
+  [[ "$(plist_value "$daemon_plist" ProcessType)" == "Interactive" ]] \
+    || fail "wrong ProcessType"
+  [[ "$(/usr/libexec/PlistBuddy \
+    -c "Print :MachServices:$HELPER_LABEL" "$daemon_plist")" == "true" ]] \
+    || fail "wrong MachServices entry"
+
+  [[ -x "$contents/MacOS/FanControllerApp" ]] \
+    || fail "main executable is missing"
+  [[ -x "$app/$EXPECTED_BUNDLE_PROGRAM" ]] \
+    || fail "helper executable is missing"
+
+  verify_adhoc_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
+  verify_adhoc_signature "$contents/MacOS/FanControllerApp"
+  /usr/bin/codesign --verify --deep --strict "$app"
+  app_metadata="$(/usr/bin/codesign -dvv "$app" 2>&1)"
+  [[ "$app_metadata" == *"Identifier=com.local.PenguinFan.experimental"* ]] \
+    || fail "signed app identifier is wrong"
+  [[ "$app_metadata" == *"Signature=adhoc"* ]] \
+    || fail "app is not ad-hoc signed"
+}
+
+[[ -f "$PACKAGE" ]] || fail "package is missing"
+
+PAYLOAD="$(/usr/sbin/pkgutil --payload-files "$PACKAGE")"
+FOUND_MAIN=0
+FOUND_DAEMON_PLIST=0
+while IFS= read -r payload_line; do
+  normalized="${payload_line#./}"
+  case "$normalized" in
+    .|._Applications|Applications|Applications/|\
+    "Applications/._PenguinFan Experimental.app"|\
+    "Applications/PenguinFan Experimental.app"|\
+    "Applications/PenguinFan Experimental.app/"*)
+      ;;
+    *)
+      fail "unexpected payload path: $payload_line"
+      ;;
+  esac
+
+  [[ "$normalized" != \
+    "Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp" ]] \
+    || FOUND_MAIN=1
+  [[ "$normalized" != \
+    "Applications/PenguinFan Experimental.app/Contents/Library/LaunchDaemons/$HELPER_PLIST_NAME" ]] \
+    || FOUND_DAEMON_PLIST=1
+done <<< "$PAYLOAD"
+
+[[ "$FOUND_MAIN" -eq 1 ]] || fail "payload is missing the main executable"
+[[ "$FOUND_DAEMON_PLIST" -eq 1 ]] \
+  || fail "payload is missing the LaunchDaemon plist"
+
+EXPANDED_PARENT="$(/usr/bin/mktemp -d \
+  "$ROOT/.build/task6-package-validation.XXXXXX")"
+EXPANDED="$EXPANDED_PARENT/expanded"
+/usr/sbin/pkgutil --expand-full "$PACKAGE" "$EXPANDED"
+
+EXPANDED_APP="$EXPANDED/Payload/Applications/PenguinFan Experimental.app"
+[[ -d "$EXPANDED_APP" ]] || fail "expanded package is missing the app"
+[[ ! -e "$EXPANDED/Payload/Applications/PenguinFan.app" ]] \
+  || fail "expanded package contains stable PenguinFan.app"
+[[ ! -e "$EXPANDED/Payload/Applications/FanController.app" ]] \
+  || fail "expanded package contains legacy FanController.app"
+
+verify_app "$EXPANDED_APP"
+printf "Validated experimental package: %s\n" "$PACKAGE"
