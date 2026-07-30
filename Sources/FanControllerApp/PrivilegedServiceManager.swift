@@ -27,6 +27,7 @@ final class PrivilegedServiceManager {
         "com.local.PenguinFan.experimental.agent.plist"
 
     private(set) var state: PrivilegedServiceState
+    private(set) var lastUnregisterError: String?
 
     private let service: any PrivilegedServiceRegistering
     private let restoreSystemModeAndDisconnect: () async throws -> Void
@@ -78,12 +79,14 @@ final class PrivilegedServiceManager {
             return
         }
 
+        lastUnregisterError = nil
         do {
             try await restoreSystemModeAndDisconnect()
             try service.unregister()
             refreshStatus()
         } catch {
-            state = .failed(error.localizedDescription)
+            lastUnregisterError = error.localizedDescription
+            refreshStatus()
         }
     }
 

@@ -23,7 +23,7 @@ final class AppModel: ObservableObject {
     var modeRequestGenerationHandler: ((ControlMode, UInt64) -> Void)?
     var privilegedApprovalHandler: ((UInt64) async -> Void)?
     var privilegedApprovalSettingsHandler: (() -> Void)?
-    var privilegedServiceRemovalHandler: (() async -> Void)?
+    var privilegedServiceRemovalHandler: (() async -> Bool)?
     private(set) var modeRequestGeneration: UInt64 = 0
     private var pendingPrivilegedGeneration: UInt64?
 
@@ -95,6 +95,14 @@ final class AppModel: ObservableObject {
     }
 
     func selectMode(_ mode: ControlMode) {
+        guard !isPrivilegedServiceRemovalInProgress
+                || mode == .systemAuto
+        else {
+            diagnosticMessage =
+                "권한 서비스 제거가 끝날 때까지 커브 또는 수동 모드를 선택할 수 없습니다."
+            return
+        }
+
         modeRequestGeneration &+= 1
         let generation = modeRequestGeneration
 
@@ -175,13 +183,19 @@ final class AppModel: ObservableObject {
 
         isPrivilegedServiceRemovalConfirmationPresented = false
         isPrivilegedServiceRemovalInProgress = true
+        let modeBeforeRemoval = settings.mode
+        let statusBeforeRemoval = controlStatus
         modeRequestGeneration &+= 1
         pendingPrivilegedMode = nil
         pendingPrivilegedGeneration = nil
         isPrivilegedApprovalPresented = false
         settings.mode = .systemAuto
         controlStatus = .restoring
-        await privilegedServiceRemovalHandler()
+        let didRemove = await privilegedServiceRemovalHandler()
+        if !didRemove {
+            settings.mode = modeBeforeRemoval
+            controlStatus = statusBeforeRemoval
+        }
         isPrivilegedServiceRemovalInProgress = false
     }
 

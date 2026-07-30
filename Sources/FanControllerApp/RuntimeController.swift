@@ -23,7 +23,10 @@ final class RuntimeController: ObservableObject {
 
     private lazy var defaultServiceManager = PrivilegedServiceManager(
         restoreSystemModeAndDisconnect: { [weak self] in
-            await self?.restoreAndShutdown()
+            guard let self else {
+                throw PrivilegedServiceRemovalRuntimeError.unavailable
+            }
+            try await self.restoreForPrivilegedServiceRemoval()
         },
         connectionFailureHandler: {}
     )
@@ -79,9 +82,9 @@ final class RuntimeController: ObservableObject {
         model.privilegedServiceRemovalHandler = {
             [weak self, weak model] in
             guard let self, let model else {
-                return
+                return false
             }
-            await self.removePrivilegedService(model: model)
+            return await self.removePrivilegedService(model: model)
         }
         installLifecycleObservers()
         if startSensors {
@@ -138,6 +141,11 @@ final class RuntimeController: ObservableObject {
         generation: UInt64,
         model: AppModel
     ) async {
+        guard !model.isPrivilegedServiceRemovalInProgress
+                || mode == .systemAuto
+        else {
+            return
+        }
         guard model.isCurrentModeRequest(generation) else {
             return
         }
@@ -204,7 +212,8 @@ final class RuntimeController: ObservableObject {
         generation: UInt64,
         model: AppModel
     ) async {
-        guard model.isCurrentModeRequest(generation),
+        guard !model.isPrivilegedServiceRemovalInProgress,
+              model.isCurrentModeRequest(generation),
               model.pendingPrivilegedMode != nil
         else {
             return
@@ -287,7 +296,9 @@ final class RuntimeController: ObservableObject {
         generation: UInt64,
         model: AppModel
     ) async throws -> ControlCoordinator {
-        guard model.isCurrentModeRequest(generation) else {
+        guard !model.isPrivilegedServiceRemovalInProgress,
+              model.isCurrentModeRequest(generation)
+        else {
             throw StaleModeRequestError()
         }
         if let coordinator {
@@ -466,27 +477,53 @@ final class RuntimeController: ObservableObject {
         )
     }
 
-    private func removePrivilegedService(model: AppModel) async {
+    private func removePrivilegedService(model: AppModel) async -> Bool {
         await serviceManager.unregister()
         model.privilegedServiceState = serviceManager.state
+
+        if let message = serviceManager.lastUnregisterError {
+            model.diagnosticMessage =
+                "시스템 팬 제어 복귀를 확인하지 못해 권한 서비스를 제거하지 않았습니다. \(message) 다시 시도하세요."
+            return false
+        }
 
         switch serviceManager.state {
         case .notRegistered:
             model.markSystemAuto()
             model.diagnosticMessage =
                 "실험적 권한 서비스를 제거했습니다."
+            return true
         case .failed(let message):
-            model.settings.mode = .systemAuto
-            model.controlStatus = .failed
             model.diagnosticMessage =
                 "권한 서비스를 제거하지 못했습니다. \(message)"
+            return false
         default:
-            model.settings.mode = .systemAuto
+            model.diagnosticMessage =
+                "권한 서비스가 아직 등록되어 있습니다. 다시 시도하세요."
+            return false
         }
     }
 
     private func shouldUseLegacyFallback(model: AppModel) -> Bool {
         legacyFallbackEnabled() || model.legacyFallbackEnabled
+    }
+
+    private func restoreForPrivilegedServiceRemoval() async throws {
+        guard let coordinator else {
+            model?.markSystemAuto()
+            return
+        }
+
+        try await coordinator.restoreSystemAuto()
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        await coordinator.restoreAndShutdown()
+        self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
+        terminationBox.set(nil)
+        model?.ipcConnected = false
+        model?.markSystemAuto()
     }
 
     private func installLifecycleObservers() {
@@ -552,6 +589,14 @@ final class RuntimeController: ObservableObject {
 }
 
 private struct StaleModeRequestError: Error {}
+
+private enum PrivilegedServiceRemovalRuntimeError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? {
+        "팬 제어 런타임을 사용할 수 없습니다."
+    }
+}
 
 private final class TerminationCoordinatorBox: @unchecked Sendable {
     private let lock = NSLock()

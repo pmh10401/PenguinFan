@@ -115,6 +115,117 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertEqual(model.settings.mode, .systemAuto)
     }
 
+    func testTask5RestoreFailureAbortsUnregisterAndKeepsServiceUsable()
+        async
+    {
+        let service = FakeServiceRegistration(status: .enabled)
+        let manager = makeManager(
+            service: service,
+            restoreAndDisconnect: {
+                throw TestFailure.expected
+            }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+        model.settings.mode = .manual
+        model.controlStatus = .manual
+        model.ipcConnected = true
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(service.unregisterCallCount, 0)
+        XCTAssertEqual(manager.state, .enabled)
+        XCTAssertEqual(model.privilegedServiceState, .enabled)
+        XCTAssertEqual(model.settings.mode, .manual)
+        XCTAssertEqual(model.controlStatus, .manual)
+        XCTAssertTrue(model.ipcConnected)
+        XCTAssertTrue(
+            model.diagnosticMessage?.contains("제거하지 않았습니다")
+                == true
+        )
+    }
+
+    func testTask5RemovalBlocksConcurrentAndInflightCustomModes()
+        async throws
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let connection = FakeXPCConnection(behavior: .hold)
+        let restoreStarted = expectation(
+            description: "Removal restore started"
+        )
+        let restoreGate = ManualAsyncGate()
+        let service = FakeServiceRegistration(status: .enabled)
+        service.onUnregister = { service.status = .notRegistered }
+        let manager = makeManager(
+            service: service,
+            restoreAndDisconnect: {
+                restoreStarted.fulfill()
+                await restoreGate.wait()
+            },
+            connectionFactory: { connection }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let staleRequestCompleted = expectation(
+            description: "Stale request completed"
+        )
+        runtime.modeRequestCompletionObserver = { _ in
+            staleRequestCompleted.fulfill()
+        }
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+
+        model.selectMode(.curve)
+        await waitForRequest(connection)
+        XCTAssertEqual(connection.requestCount, 1)
+
+        model.requestPrivilegedServiceRemoval()
+        let removal = Task {
+            await model.confirmPrivilegedServiceRemoval()
+        }
+        await fulfillment(of: [restoreStarted], timeout: 1)
+        let removalGeneration = model.modeRequestGeneration
+
+        model.selectMode(.manual)
+
+        XCTAssertEqual(
+            model.modeRequestGeneration,
+            removalGeneration
+        )
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(connection.requestCount, 1)
+
+        await restoreGate.open()
+        await removal.value
+        try connection.replyToHeldRequest(
+            with: .status(
+                AgentStatus(
+                    modelIdentifier: "Mac14,6",
+                    fans: [fan],
+                    manualFanIndices: []
+                )
+            )
+        )
+        await fulfillment(of: [staleRequestCompleted], timeout: 1)
+
+        XCTAssertEqual(service.unregisterCallCount, 1)
+        XCTAssertEqual(model.privilegedServiceState, .notRegistered)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
     func testSelectingCustomModeWithoutEnabledServiceDefersRuntimeRequest() {
         let model = AppModel()
         var requestedModes: [ControlMode] = []
@@ -690,7 +801,8 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         await manager.unregister()
 
         XCTAssertEqual(service.unregisterCallCount, 0)
-        XCTAssertEqual(manager.state, .failed("expected failure"))
+        XCTAssertEqual(manager.state, .enabled)
+        XCTAssertEqual(manager.lastUnregisterError, "expected failure")
     }
 
     func testOpenApprovalSettingsUsesInjectedOpener() {
@@ -999,6 +1111,12 @@ private final class FakeXPCConnection:
         return storedInvalidateCallCount
     }
 
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return heldRequests.count
+    }
+
     func resume() {
         didResume = true
     }
@@ -1096,6 +1214,26 @@ private final class ManualTimeoutScheduler:
         for operation in pendingOperations {
             operation()
         }
+    }
+}
+
+private actor ManualAsyncGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        if isOpen {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

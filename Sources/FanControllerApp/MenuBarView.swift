@@ -182,6 +182,13 @@ struct MenuBarView: View {
                 Text("수동").tag(ControlMode.manual)
             }
             .pickerStyle(.segmented)
+            .disabled(model.isPrivilegedServiceRemovalInProgress)
+
+            if model.isPrivilegedServiceRemovalInProgress {
+                Text("권한 서비스 제거 중에는 제어 모드를 변경할 수 없습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
