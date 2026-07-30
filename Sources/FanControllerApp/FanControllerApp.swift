@@ -30,7 +30,7 @@ final class FanControllerAppDelegate: NSObject, NSApplicationDelegate {
         runtime.start(model: model)
 
         let statusItem = NSStatusBar.system.statusItem(
-            withLength: NSStatusItem.variableLength
+            withLength: NSStatusItem.squareLength
         )
         guard let button = statusItem.button else {
             return

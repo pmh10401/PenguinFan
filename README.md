@@ -98,8 +98,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 Build an installer:
 
 ```bash
-./script/build_installer.sh 1.0.9
-open installer/PenguinFan-1.0.9.pkg
+./script/build_installer.sh 1.0.10
+open installer/PenguinFan-1.0.10.pkg
 ```
 
 Run tests:
