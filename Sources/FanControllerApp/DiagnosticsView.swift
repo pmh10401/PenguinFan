@@ -22,6 +22,15 @@ struct DiagnosticsView: View {
                     "실험적 권한 서비스",
                     value: model.privilegedServiceStatusLabel
                 )
+                if model.privilegedServiceState == .notFound {
+                    Text(
+                        "macOS가 현재 등록 상태를 확인하지 못했습니다. "
+                            + "Curve 또는 Manual 승인 후 공식 등록 API를 "
+                            + "시도합니다."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             Section("팬") {

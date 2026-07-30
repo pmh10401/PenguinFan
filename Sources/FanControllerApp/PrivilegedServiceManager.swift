@@ -76,7 +76,7 @@ final class PrivilegedServiceManager {
     }
 
     func register() {
-        guard state == .notRegistered else {
+        guard state == .notRegistered || state == .notFound else {
             return
         }
 

@@ -22,7 +22,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             (.registering, "미등록", false, false),
             (.requiresApproval, "승인 대기", true, true),
             (.enabled, "활성", false, true),
-            (.notFound, "찾을 수 없음", false, false),
+            (.notFound, "등록 확인 필요", false, false),
             (.failed("expected"), "오류", false, false),
         ]
         let model = AppModel()
@@ -944,7 +944,6 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         let cases: [(SMAppService.Status, PrivilegedServiceState)] = [
             (.enabled, .enabled),
             (.requiresApproval, .requiresApproval),
-            (.notFound, .notFound),
         ]
 
         for (serviceStatus, expectedState) in cases {
@@ -958,21 +957,54 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         }
     }
 
-    func testRegisterFailureRemainsReadOnlyUntilExplicitRefresh() {
-        let service = FakeServiceRegistration(status: .notRegistered)
+    func testNotFoundRegistrationRefreshesToApprovalOrEnabled() {
+        let statuses: [SMAppService.Status] = [
+            .requiresApproval,
+            .enabled,
+        ]
+
+        for status in statuses {
+            let service = FakeServiceRegistration(status: .notFound)
+            let manager = makeManager(service: service)
+            service.onRegister = {
+                service.status = status
+            }
+
+            manager.register()
+
+            XCTAssertEqual(service.registerCallCount, 1)
+            XCTAssertEqual(
+                manager.state,
+                status == .enabled ? .enabled : .requiresApproval
+            )
+        }
+    }
+
+    func testNotFoundRegistrationErrorBecomesActionableFailure() {
+        let service = FakeServiceRegistration(status: .notFound)
         service.registerError = TestFailure.expected
         let manager = makeManager(service: service)
 
         manager.register()
-        service.registerError = nil
         manager.register()
 
         XCTAssertEqual(service.registerCallCount, 1)
         XCTAssertEqual(manager.state, .failed("expected failure"))
+    }
 
-        manager.refreshStatus()
+    func testRegisteringAndFailedStatesDoNotDuplicateRegistration() {
+        let service = FakeServiceRegistration(status: .notFound)
+        service.registerError = TestFailure.expected
+        let manager = makeManager(service: service)
+        service.onRegister = {
+            manager.register()
+        }
+
         manager.register()
-        XCTAssertEqual(service.registerCallCount, 2)
+        manager.register()
+
+        XCTAssertEqual(service.registerCallCount, 1)
+        XCTAssertEqual(manager.state, .failed("expected failure"))
     }
 
     func testUnregisterRestoresAndDisconnectsBeforeRemovingService() async {

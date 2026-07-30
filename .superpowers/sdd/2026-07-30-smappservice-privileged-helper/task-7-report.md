@@ -546,3 +546,100 @@ PACKAGE_BUILD_EXIT=0
 ```
 
 Artifact SHA-256: `62d58a5d1f80560b162bd7110619a921e33a35cff46ac429391a054bd5bd0096`.
+
+---
+
+## Runtime defect fix round 1: register from notFound
+
+Validation date: 2026-07-30 KST.
+
+Root cause evidence showed the installed daemon plist and helper were present,
+the signatures verified, and the daemon name matched, while
+`SMAppService.status` returned `.notFound`. The manager previously accepted
+only `.notRegistered`, so an explicit user-confirmed attempt returned before
+calling the official registration API.
+
+The focused fix permits only `.notRegistered` and `.notFound` to enter
+`.registering`, invokes `service.register()` once, refreshes the official
+status after success, and records the thrown localized macOS error as
+`.failed(...)`. Registering, failed, enabled, and approval-pending states remain
+protected from duplicate registration. No fallback is enabled or invoked, and
+System mode remains the fail-closed state. Diagnostics now describe
+`.notFound` as a status lookup requiring an official registration attempt,
+rather than asserting the embedded service is absent.
+
+No app was installed, the stable app was not modified, and marketing files were
+untouched.
+
+### Focused registration tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result:
+
+```text
+Test Suite 'M2MaxFanControllerPackageTests.xctest' passed at 2026-07-30 14:22:58.777.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.040 (0.042) seconds
+Test Suite 'Selected tests' passed at 2026-07-30 14:22:58.777.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.040 (0.043) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+FOCUSED_TEST_EXIT=0
+```
+
+Coverage includes registration from `.notFound`, thrown-error capture,
+refresh to `.requiresApproval` and `.enabled`, and duplicate suppression
+while `.registering` or `.failed`.
+
+### Release app build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/4] Compiling FanControllerApp AppModel.swift
+[3/5] Write Objects.LinkFileList
+[4/5] Linking FanControllerApp
+Build of product 'FanControllerApp' complete! (3.24s)
+RELEASE_BUILD_EXIT=0
+```
+
+### Transactional experimental package regeneration
+
+Command:
+
+```bash
+./script/build_installer.sh --experimental-helper
+/usr/bin/shasum -a 256 installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/dist-1.1.0/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp: replacing existing signature
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/dist-1.1.0/PenguinFan Experimental.app: replacing existing signature
+Built: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/dist-1.1.0/PenguinFan Experimental.app
+pkgbuild: Inferring bundle components from contents of /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/installer-root
+pkgbuild: Adding component at Applications/PenguinFan Experimental.app
+pkgbuild: Wrote package to /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.0y2FVz/PenguinFan-Experimental-1.1.0.pkg
+Built installer: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+490dc3564b8b13b16825be3f27b8ffaa4a9db6d32505f3ff7da57d69bbc8f7eb  installer/PenguinFan-Experimental-1.1.0.pkg
+PACKAGE_BUILD_EXIT=0
+```
+
+Artifact SHA-256: `490dc3564b8b13b16825be3f27b8ffaa4a9db6d32505f3ff7da57d69bbc8f7eb`.

@@ -59,7 +59,7 @@ final class AppModel: ObservableObject {
         case .enabled:
             "활성"
         case .notFound:
-            "찾을 수 없음"
+            "등록 확인 필요"
         case .failed:
             "오류"
         }
