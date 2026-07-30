@@ -18,6 +18,10 @@ struct DiagnosticsView: View {
                     "IPC",
                     value: model.ipcConnected ? "연결됨" : "연결 안 됨"
                 )
+                LabeledContent(
+                    "실험적 권한 서비스",
+                    value: model.privilegedServiceStatusLabel
+                )
             }
 
             Section("팬") {
@@ -57,6 +61,18 @@ struct DiagnosticsView: View {
                             : Color.orange
                     )
                     .textSelection(.enabled)
+            }
+
+            Section("실험적 진단 옵션") {
+                Toggle(
+                    "레거시 osascript fallback 허용",
+                    isOn: $model.legacyFallbackEnabled
+                )
+                Text(
+                    "이 옵션을 켜면 권한 승인 대화상자에 PenguinFan이 아닌 osascript가 표시될 수 있습니다. 진단이 끝나면 다시 끄세요."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("진단")

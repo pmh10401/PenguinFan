@@ -76,6 +76,13 @@ final class RuntimeController: ObservableObject {
             [weak self] in
             self?.serviceManager.openApprovalSettings()
         }
+        model.privilegedServiceRemovalHandler = {
+            [weak self, weak model] in
+            guard let self, let model else {
+                return
+            }
+            await self.removePrivilegedService(model: model)
+        }
         installLifecycleObservers()
         if startSensors {
             startReadOnlySensors(model: model)
@@ -234,7 +241,7 @@ final class RuntimeController: ObservableObject {
             model.diagnosticMessage =
                 "시스템 설정의 로그인 항목에서 PenguinFan 권한 서비스를 승인한 뒤 계속을 다시 선택하세요."
         case .failed(let message):
-            if legacyFallbackEnabled(),
+            if shouldUseLegacyFallback(model: model),
                let mode = model.applyPendingPrivilegedMode(
                    generation: generation
                ) {
@@ -251,7 +258,7 @@ final class RuntimeController: ObservableObject {
                 )
             }
         case .notFound:
-            if legacyFallbackEnabled(),
+            if shouldUseLegacyFallback(model: model),
                let mode = model.applyPendingPrivilegedMode(
                    generation: generation
                ) {
@@ -296,7 +303,7 @@ final class RuntimeController: ObservableObject {
 
         let client: any ControlClient
         let connectionIdentity = UUID()
-        if legacyFallbackEnabled() {
+        if shouldUseLegacyFallback(model: model) {
             let socketURL = try await launcher.startAgent()
             client = UnixSocketControlClient(path: socketURL.path)
         } else {
@@ -457,6 +464,29 @@ final class RuntimeController: ObservableObject {
             generation: model.modeRequestGeneration,
             model: model
         )
+    }
+
+    private func removePrivilegedService(model: AppModel) async {
+        await serviceManager.unregister()
+        model.privilegedServiceState = serviceManager.state
+
+        switch serviceManager.state {
+        case .notRegistered:
+            model.markSystemAuto()
+            model.diagnosticMessage =
+                "실험적 권한 서비스를 제거했습니다."
+        case .failed(let message):
+            model.settings.mode = .systemAuto
+            model.controlStatus = .failed
+            model.diagnosticMessage =
+                "권한 서비스를 제거하지 못했습니다. \(message)"
+        default:
+            model.settings.mode = .systemAuto
+        }
+    }
+
+    private func shouldUseLegacyFallback(model: AppModel) -> Bool {
+        legacyFallbackEnabled() || model.legacyFallbackEnabled
     }
 
     private func installLifecycleObservers() {

@@ -16,10 +16,14 @@ final class AppModel: ObservableObject {
         .notRegistered
     @Published var pendingPrivilegedMode: ControlMode?
     @Published var isPrivilegedApprovalPresented = false
+    @Published var isPrivilegedServiceRemovalConfirmationPresented = false
+    @Published var isPrivilegedServiceRemovalInProgress = false
+    @Published var legacyFallbackEnabled = false
     var modeRequestHandler: ((ControlMode) -> Void)?
     var modeRequestGenerationHandler: ((ControlMode, UInt64) -> Void)?
     var privilegedApprovalHandler: ((UInt64) async -> Void)?
     var privilegedApprovalSettingsHandler: (() -> Void)?
+    var privilegedServiceRemovalHandler: (() async -> Void)?
     private(set) var modeRequestGeneration: UInt64 = 0
     private var pendingPrivilegedGeneration: UInt64?
 
@@ -43,6 +47,30 @@ final class AppModel: ObservableObject {
         default:
             "fan.fill"
         }
+    }
+
+    var privilegedServiceStatusLabel: String {
+        switch privilegedServiceState {
+        case .notRegistered, .registering:
+            "미등록"
+        case .requiresApproval:
+            "승인 대기"
+        case .enabled:
+            "활성"
+        case .notFound:
+            "찾을 수 없음"
+        case .failed:
+            "오류"
+        }
+    }
+
+    var canOpenPrivilegedApprovalSettings: Bool {
+        privilegedServiceState == .requiresApproval
+    }
+
+    var canRemovePrivilegedService: Bool {
+        privilegedServiceState == .enabled
+            || privilegedServiceState == .requiresApproval
     }
 
     var safeRPMRange: ClosedRange<Double> {
@@ -117,7 +145,44 @@ final class AppModel: ObservableObject {
     }
 
     func openPrivilegedApprovalSettings() {
+        guard canOpenPrivilegedApprovalSettings else {
+            return
+        }
         privilegedApprovalSettingsHandler?()
+    }
+
+    func requestPrivilegedServiceRemoval() {
+        guard canRemovePrivilegedService,
+              !isPrivilegedServiceRemovalInProgress
+        else {
+            return
+        }
+        isPrivilegedServiceRemovalConfirmationPresented = true
+    }
+
+    func cancelPrivilegedServiceRemoval() {
+        isPrivilegedServiceRemovalConfirmationPresented = false
+    }
+
+    func confirmPrivilegedServiceRemoval() async {
+        guard isPrivilegedServiceRemovalConfirmationPresented,
+              canRemovePrivilegedService,
+              !isPrivilegedServiceRemovalInProgress,
+              let privilegedServiceRemovalHandler
+        else {
+            return
+        }
+
+        isPrivilegedServiceRemovalConfirmationPresented = false
+        isPrivilegedServiceRemovalInProgress = true
+        modeRequestGeneration &+= 1
+        pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = .systemAuto
+        controlStatus = .restoring
+        await privilegedServiceRemovalHandler()
+        isPrivilegedServiceRemovalInProgress = false
     }
 
     func applyPendingPrivilegedMode(

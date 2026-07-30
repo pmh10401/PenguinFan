@@ -9,6 +9,112 @@ import XCTest
 
 @MainActor
 final class PrivilegedServiceManagerTests: XCTestCase {
+    func testTask5ServiceStatusLabelsAndActionVisibility() {
+        let cases: [
+            (
+                PrivilegedServiceState,
+                String,
+                canApprove: Bool,
+                canRemove: Bool
+            )
+        ] = [
+            (.notRegistered, "미등록", false, false),
+            (.registering, "미등록", false, false),
+            (.requiresApproval, "승인 대기", true, true),
+            (.enabled, "활성", false, true),
+            (.notFound, "찾을 수 없음", false, false),
+            (.failed("expected"), "오류", false, false),
+        ]
+        let model = AppModel()
+
+        for item in cases {
+            model.privilegedServiceState = item.0
+
+            XCTAssertEqual(model.privilegedServiceStatusLabel, item.1)
+            XCTAssertEqual(
+                model.canOpenPrivilegedApprovalSettings,
+                item.canApprove
+            )
+            XCTAssertEqual(
+                model.canRemovePrivilegedService,
+                item.canRemove
+            )
+        }
+    }
+
+    func testTask5LegacyFallbackIsExplicitAndOffByDefault() {
+        let model = AppModel()
+
+        XCTAssertFalse(model.legacyFallbackEnabled)
+
+        model.legacyFallbackEnabled = true
+
+        XCTAssertTrue(model.legacyFallbackEnabled)
+    }
+
+    func testTask5RemovalRequiresConfirmationAndRestoresBeforeUnregister()
+        async
+    {
+        let events = EventRecorder()
+        let service = FakeServiceRegistration(status: .enabled)
+        service.onUnregister = {
+            events.append("unregister")
+            service.status = .notRegistered
+        }
+        let manager = makeManager(
+            service: service,
+            restoreAndDisconnect: {
+                events.append("restore-and-disconnect")
+            }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.privilegedServiceState = .enabled
+        model.settings.mode = .manual
+        runtime.start(model: model, startSensors: false)
+
+        await model.confirmPrivilegedServiceRemoval()
+        XCTAssertEqual(service.unregisterCallCount, 0)
+
+        model.requestPrivilegedServiceRemoval()
+        XCTAssertTrue(
+            model.isPrivilegedServiceRemovalConfirmationPresented
+        )
+
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertEqual(
+            events.values,
+            ["restore-and-disconnect", "unregister"]
+        )
+        XCTAssertEqual(service.unregisterCallCount, 1)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertFalse(model.ipcConnected)
+        XCTAssertEqual(model.privilegedServiceState, .notRegistered)
+        XCTAssertFalse(model.isPrivilegedServiceRemovalInProgress)
+    }
+
+    func testTask5RemovalInvalidatesAnOlderModeGeneration() async {
+        let service = FakeServiceRegistration(status: .enabled)
+        service.onUnregister = { service.status = .notRegistered }
+        let manager = makeManager(service: service)
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+        model.privilegedServiceState = .enabled
+        model.selectMode(.manual)
+        let customModeGeneration = model.modeRequestGeneration
+
+        model.requestPrivilegedServiceRemoval()
+        await model.confirmPrivilegedServiceRemoval()
+
+        XCTAssertFalse(
+            model.isCurrentModeRequest(customModeGeneration)
+        )
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+    }
+
     func testSelectingCustomModeWithoutEnabledServiceDefersRuntimeRequest() {
         let model = AppModel()
         var requestedModes: [ControlMode] = []
