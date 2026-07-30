@@ -458,3 +458,91 @@ Task 7 is not fully complete. Installation and System-mode isolation are now
 validated. The exact remaining interaction is for the user to open the
 experimental PenguinFan menu-bar item and select Curve so the approval flow
 becomes observable.
+
+---
+
+## Focused UX defect fix: visible launch and reopen
+
+Validation date: 2026-07-30 KST.
+
+Root cause: the accessory-only app had no Dock icon or window, and reopening the
+running application did not explicitly present its status-item popover. The fix
+adds a testable presentation coordinator, presents once after status-item setup
+on initial launch, and presents again from
+`applicationShouldHandleReopen`. Ordinary status-item clicks retain their
+existing toggle behavior. No timer callback requests presentation.
+
+Changed production behavior is limited to the menu-bar app delegate. No app was
+installed, the stable app was not modified, and marketing files were untouched.
+
+### Focused regression tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PopoverPresentationCoordinatorTests
+```
+
+Result:
+
+```text
+Test Suite 'M2MaxFanControllerPackageTests.xctest' passed at 2026-07-30 14:13:16.551.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'Selected tests' passed at 2026-07-30 14:13:16.551.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+FOCUSED_TEST_EXIT=0
+```
+
+The two tests verify that initial launch presents exactly once and every reopen
+requests presentation again without live GUI automation.
+
+### Release app build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/4] Compiling FanControllerApp AppModel.swift
+[3/5] Write Objects.LinkFileList
+[4/5] Linking FanControllerApp
+Build of product 'FanControllerApp' complete! (3.28s)
+RELEASE_BUILD_EXIT=0
+```
+
+### Transactional experimental package regeneration
+
+Command:
+
+```bash
+./script/build_installer.sh --experimental-helper
+/usr/bin/shasum -a 256 installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/dist-1.1.0/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp: replacing existing signature
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/dist-1.1.0/PenguinFan Experimental.app: replacing existing signature
+Built: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/dist-1.1.0/PenguinFan Experimental.app
+pkgbuild: Inferring bundle components from contents of /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/installer-root
+pkgbuild: Adding component at Applications/PenguinFan Experimental.app
+pkgbuild: Wrote package to /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.5VWT0t/PenguinFan-Experimental-1.1.0.pkg
+Built installer: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+62d58a5d1f80560b162bd7110619a921e33a35cff46ac429391a054bd5bd0096  installer/PenguinFan-Experimental-1.1.0.pkg
+PACKAGE_BUILD_EXIT=0
+```
+
+Artifact SHA-256: `62d58a5d1f80560b162bd7110619a921e33a35cff46ac429391a054bd5bd0096`.
