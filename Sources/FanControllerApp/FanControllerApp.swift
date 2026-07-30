@@ -1,6 +1,31 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class PopoverPresentationCoordinator {
+    enum Trigger {
+        case initialLaunch
+        case reopen
+    }
+
+    private var didRequestInitialPresentation = false
+    private let present: () -> Void
+
+    init(present: @escaping () -> Void) {
+        self.present = present
+    }
+
+    func requestPresentation(for trigger: Trigger) {
+        if trigger == .initialLaunch {
+            guard !didRequestInitialPresentation else {
+                return
+            }
+            didRequestInitialPresentation = true
+        }
+        present()
+    }
+}
+
 @main
 struct FanControllerApp: App {
     @NSApplicationDelegateAdaptor(FanControllerAppDelegate.self)
@@ -22,6 +47,10 @@ final class FanControllerAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
     private var diagnosticsWindow: NSWindow?
+    private lazy var popoverPresentationCoordinator =
+        PopoverPresentationCoordinator { [weak self] in
+            self?.presentPopover()
+        }
 
     func applicationDidFinishLaunching(
         _ notification: Notification
@@ -67,6 +96,20 @@ final class FanControllerAppDelegate: NSObject, NSApplicationDelegate {
                 button?.image = image
             }
         )
+
+        DispatchQueue.main.async { [weak self] in
+            self?.popoverPresentationCoordinator.requestPresentation(
+                for: .initialLaunch
+            )
+        }
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        popoverPresentationCoordinator.requestPresentation(for: .reopen)
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -87,6 +130,21 @@ final class FanControllerAppDelegate: NSObject, NSApplicationDelegate {
                 preferredEdge: .minY
             )
         }
+    }
+
+    private func presentPopover() {
+        guard let button = statusItem?.button else {
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        guard !popover.isShown else {
+            return
+        }
+        popover.show(
+            relativeTo: button.bounds,
+            of: button,
+            preferredEdge: .minY
+        )
     }
 
     private func showSettings() {

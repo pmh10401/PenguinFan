@@ -18,6 +18,19 @@ struct DiagnosticsView: View {
                     "IPC",
                     value: model.ipcConnected ? "연결됨" : "연결 안 됨"
                 )
+                LabeledContent(
+                    "실험적 권한 서비스",
+                    value: model.privilegedServiceStatusLabel
+                )
+                if model.privilegedServiceState == .notFound {
+                    Text(
+                        "macOS가 현재 등록 상태를 확인하지 못했습니다. "
+                            + "Curve 또는 Manual 승인 후 공식 등록 API를 "
+                            + "시도합니다."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             Section("팬") {
@@ -57,6 +70,18 @@ struct DiagnosticsView: View {
                             : Color.orange
                     )
                     .textSelection(.enabled)
+            }
+
+            Section("실험적 진단 옵션") {
+                Toggle(
+                    "레거시 osascript fallback 허용",
+                    isOn: $model.legacyFallbackEnabled
+                )
+                Text(
+                    "이 옵션을 켜면 권한 승인 대화상자에 PenguinFan이 아닌 osascript가 표시될 수 있습니다. 진단이 끝나면 다시 끄세요."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("진단")

@@ -5,30 +5,126 @@ import SMCKit
 
 @MainActor
 final class RuntimeController: ObservableObject {
+    private static let privilegedServiceBuildKey =
+        "PenguinFan.Experimental.PrivilegedServiceBuild"
+
     private let launcher = AuthorizationLauncher()
+    private let injectedServiceManager: PrivilegedServiceManager?
+    private let legacyFallbackEnabled: () -> Bool
     private let terminationBox = TerminationCoordinatorBox()
     private var coordinator: ControlCoordinator?
     private var sensorTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var activeConnectionIdentity: UUID?
+    private var coordinatorConnectionIdentity: UUID?
     private var observers: [NSObjectProtocol] = []
     private var started = false
     private var lastSnapshotAt: Date?
     private weak var model: AppModel?
+    var modeRequestCompletionObserver: ((UInt64) -> Void)?
+    var connectionFailureEventObserver: ((Bool) -> Void)?
 
-    func start(model: AppModel) {
+    private lazy var defaultServiceManager = PrivilegedServiceManager(
+        restoreSystemModeAndDisconnect: { [weak self] in
+            guard let self else {
+                throw PrivilegedServiceRemovalRuntimeError.unavailable
+            }
+            try await self.restoreForPrivilegedServiceRemoval()
+        },
+        connectionFailureHandler: {}
+    )
+
+    private var serviceManager: PrivilegedServiceManager {
+        injectedServiceManager ?? defaultServiceManager
+    }
+
+    init(
+        serviceManager: PrivilegedServiceManager? = nil,
+        legacyFallbackEnabled: @escaping () -> Bool = { false }
+    ) {
+        injectedServiceManager = serviceManager
+        self.legacyFallbackEnabled = legacyFallbackEnabled
+    }
+
+    func start(model: AppModel, startSensors: Bool = true) {
         guard !started else {
             return
         }
         started = true
         self.model = model
-        model.modeRequestHandler = { [weak self, weak model] mode in
+        serviceManager.refreshStatus()
+        model.privilegedServiceState = serviceManager.state
+        refreshPrivilegedServiceAfterAppUpdateIfNeeded(model: model)
+        model.modeRequestGenerationHandler = {
+            [weak self, weak model] mode, generation in
             guard let self, let model else {
                 return
             }
-            Task { await self.request(mode: mode, model: model) }
+            Task {
+                await self.request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
+                self.modeRequestCompletionObserver?(generation)
+            }
+        }
+        model.privilegedApprovalHandler = {
+            [weak self, weak model] generation in
+            guard let self, let model else {
+                return
+            }
+            await self.confirmPrivilegedControl(
+                generation: generation,
+                model: model
+            )
+        }
+        model.privilegedApprovalSettingsHandler = {
+            [weak self] in
+            self?.serviceManager.openApprovalSettings()
+        }
+        model.privilegedServiceRemovalHandler = {
+            [weak self, weak model] in
+            guard let self, let model else {
+                return false
+            }
+            return await self.removePrivilegedService(model: model)
         }
         installLifecycleObservers()
-        startReadOnlySensors(model: model)
+        if startSensors {
+            startReadOnlySensors(model: model)
+        }
+    }
+
+    private func refreshPrivilegedServiceAfterAppUpdateIfNeeded(
+        model: AppModel
+    ) {
+        guard injectedServiceManager == nil,
+              serviceManager.state == .enabled,
+              let build = Bundle.main.object(
+                  forInfoDictionaryKey: "CFBundleVersion"
+              ) as? String,
+              UserDefaults.standard.string(
+                  forKey: Self.privilegedServiceBuildKey
+              ) != build
+        else {
+            return
+        }
+
+        model.privilegedServiceState = .registering
+        Task { [weak self, weak model] in
+            guard let self, let model else {
+                return
+            }
+            await self.serviceManager.refreshEnabledRegistration()
+            model.privilegedServiceState = self.serviceManager.state
+            if self.serviceManager.state == .enabled {
+                UserDefaults.standard.set(
+                    build,
+                    forKey: Self.privilegedServiceBuildKey
+                )
+            }
+        }
     }
 
     private func startReadOnlySensors(model: AppModel) {
@@ -77,39 +173,199 @@ final class RuntimeController: ObservableObject {
 
     private func request(
         mode: ControlMode,
-        model: AppModel
+        generation: UInt64,
+        model: AppModel,
+        commitPendingModeAfterReadiness: Bool = false
     ) async {
+        guard !model.isPrivilegedServiceRemovalInProgress
+                || mode == .systemAuto
+        else {
+            return
+        }
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
+
         if mode == .systemAuto {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            activeConnectionIdentity = nil
+            model.ipcConnected = false
             if let coordinator {
                 do {
                     try await coordinator.restoreSystemAuto()
-                    model.markSystemAuto()
+                    model.markSystemAuto(ifCurrent: generation)
                 } catch {
-                    await failControl(error, model: model)
+                    await failControl(
+                        error,
+                        generation: generation,
+                        model: model
+                    )
                 }
             } else {
-                model.markSystemAuto()
+                model.markSystemAuto(ifCurrent: generation)
             }
             return
         }
 
         do {
-            let coordinator = try await ensureCoordinator(model: model)
+            let coordinator = try await ensureCoordinator(
+                generation: generation,
+                model: model
+            )
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
+            if commitPendingModeAfterReadiness {
+                guard model.pendingPrivilegedMode == mode,
+                      model.applyPendingPrivilegedMode(
+                          generation: generation
+                      ) == mode
+                else {
+                    return
+                }
+            }
             await coordinator.update(settings: model.settings)
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
             if let snapshot = model.snapshot {
                 try await coordinator.apply(snapshot: snapshot)
             }
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
+            startHeartbeat(
+                coordinator: coordinator,
+                generation: generation,
+                model: model
+            )
             model.controlStatus = mode == .curve ? .curve : .manual
             model.diagnosticMessage = nil
+        } catch is StaleModeRequestError {
+            return
         } catch {
-            await failControl(error, model: model)
+            await failControl(
+                error,
+                generation: generation,
+                model: model
+            )
+        }
+    }
+
+    private func confirmPrivilegedControl(
+        generation: UInt64,
+        model: AppModel
+    ) async {
+        guard !model.isPrivilegedServiceRemovalInProgress,
+              model.isCurrentModeRequest(generation),
+              model.pendingPrivilegedMode != nil
+        else {
+            return
+        }
+
+        serviceManager.refreshStatus()
+        if serviceManager.state == .notRegistered
+            || serviceManager.state == .notFound
+        {
+            serviceManager.register()
+        }
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
+        model.privilegedServiceState = serviceManager.state
+
+        switch serviceManager.state {
+        case .enabled:
+            if let build = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String {
+                UserDefaults.standard.set(
+                    build,
+                    forKey: Self.privilegedServiceBuildKey
+                )
+            }
+            guard let mode = model.pendingPrivilegedMode else {
+                return
+            }
+            model.requiresFreshPrivilegedConfirmation = false
+            await request(
+                mode: mode,
+                generation: generation,
+                model: model,
+                commitPendingModeAfterReadiness: true
+            )
+            guard model.isCurrentModeRequest(generation),
+                  model.controlStatus == .failed
+            else {
+                return
+            }
+            model.pendingPrivilegedMode = nil
+            model.isPrivilegedApprovalPresented = false
+        case .requiresApproval:
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
+            model.settings.mode = .systemAuto
+            model.controlStatus = .authorizing
+            model.isPrivilegedApprovalPresented = true
+            model.diagnosticMessage =
+                "시스템 설정의 로그인 항목에서 PenguinFan 권한 서비스를 승인한 뒤 계속을 다시 선택하세요."
+        case .failed(let message):
+            if shouldUseLegacyFallback(model: model),
+               let mode = model.applyPendingPrivilegedMode(
+                   generation: generation
+               ) {
+                await request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
+            } else {
+                await failPendingApproval(
+                    message,
+                    generation: generation,
+                    model: model
+                )
+            }
+        case .notFound:
+            if shouldUseLegacyFallback(model: model),
+               let mode = model.applyPendingPrivilegedMode(
+                   generation: generation
+               ) {
+                await request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
+            } else {
+                await failPendingApproval(
+                    "앱에 실험적 권한 서비스가 포함되어 있지 않습니다.",
+                    generation: generation,
+                    model: model
+                )
+            }
+        case .notRegistered, .registering:
+            await failPendingApproval(
+                "권한 서비스 등록이 완료되지 않았습니다.",
+                generation: generation,
+                model: model
+            )
         }
     }
 
     private func ensureCoordinator(
+        generation: UInt64,
         model: AppModel
     ) async throws -> ControlCoordinator {
+        guard !model.isPrivilegedServiceRemovalInProgress,
+              model.isCurrentModeRequest(generation)
+        else {
+            throw StaleModeRequestError()
+        }
         if let coordinator {
+            activeConnectionIdentity = coordinatorConnectionIdentity
+            model.ipcConnected = activeConnectionIdentity != nil
             return coordinator
         }
         guard let fans = model.capabilities?.fans, !fans.isEmpty else {
@@ -118,22 +374,47 @@ final class RuntimeController: ObservableObject {
             )
         }
 
-        let socketURL = try await launcher.startAgent()
+        let client: any ControlClient
+        let connectionIdentity = UUID()
+        if shouldUseLegacyFallback(model: model) {
+            let socketURL = try await launcher.startAgent()
+            client = UnixSocketControlClient(path: socketURL.path)
+        } else {
+            guard serviceManager.state == .enabled else {
+                throw AuthorizationLauncherError.agentFailed(
+                    "권한 서비스가 활성화되지 않았습니다."
+                )
+            }
+            client = serviceManager.makeControlClient(
+                connectionFailureHandler: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        await self?.handleConnectionFailure(
+                            connectionIdentity: connectionIdentity
+                        )
+                    }
+                }
+            )
+        }
         let coordinator = ControlCoordinator(
-            client: UnixSocketControlClient(path: socketURL.path),
+            client: client,
             settings: model.settings,
             fans: fans
         )
         _ = try await coordinator.status()
+        guard model.isCurrentModeRequest(generation) else {
+            throw StaleModeRequestError()
+        }
         self.coordinator = coordinator
+        coordinatorConnectionIdentity = connectionIdentity
+        activeConnectionIdentity = connectionIdentity
         terminationBox.set(coordinator)
         model.ipcConnected = true
-        startHeartbeat(coordinator: coordinator, model: model)
         return coordinator
     }
 
     private func startHeartbeat(
         coordinator: ControlCoordinator,
+        generation: UInt64,
         model: AppModel
     ) {
         heartbeatTask?.cancel()
@@ -146,7 +427,11 @@ final class RuntimeController: ObservableObject {
                     guard let self, let model else {
                         return
                     }
-                    await self.failControl(error, model: model)
+                    await self.failControl(
+                        error,
+                        generation: generation,
+                        model: model
+                    )
                     return
                 }
             }
@@ -167,7 +452,11 @@ final class RuntimeController: ObservableObject {
             await coordinator.update(settings: model.settings)
             try await coordinator.apply(snapshot: snapshot)
         } catch {
-            await failControl(error, model: model)
+            await failControl(
+                error,
+                generation: model.modeRequestGeneration,
+                model: model
+            )
         }
     }
 
@@ -178,19 +467,148 @@ final class RuntimeController: ObservableObject {
         else {
             return
         }
-        Task { await failControl(ControlCoordinatorError.missingTemperature, model: model) }
+        let generation = model.modeRequestGeneration
+        Task {
+            await failControl(
+                ControlCoordinatorError.missingTemperature,
+                generation: generation,
+                model: model
+            )
+        }
     }
 
     private func failControl(
         _ error: Error,
+        generation: UInt64,
         model: AppModel
     ) async {
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         if let coordinator {
             try? await coordinator.restoreSystemAuto()
         }
+        self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
+        terminationBox.set(nil)
+        model.ipcConnected = false
         model.controlStatus = .failed
         model.settings.mode = .systemAuto
-        model.diagnosticMessage = error.localizedDescription
+        model.privilegedServiceState = .failed(
+            error.localizedDescription
+        )
+        model.diagnosticMessage =
+            "팬 제어 권한 서비스에 연결하지 못했습니다. \(error.localizedDescription) 시스템 설정을 확인하세요. 읽기 전용 모드를 유지합니다."
+    }
+
+    private func failPendingApproval(
+        _ message: String,
+        generation: UInt64,
+        model: AppModel
+    ) async {
+        await failControl(
+            AuthorizationLauncherError.agentFailed(message),
+            generation: generation,
+            model: model
+        )
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
+        model.pendingPrivilegedMode = nil
+        model.isPrivilegedApprovalPresented = false
+    }
+
+    private func handleConnectionFailure(
+        connectionIdentity: UUID
+    ) async {
+        guard let model else {
+            return
+        }
+        let isActive = activeConnectionIdentity == connectionIdentity
+        connectionFailureEventObserver?(isActive)
+        guard isActive else {
+            return
+        }
+        await failControl(
+            XPCControlClientError.invalidated,
+            generation: model.modeRequestGeneration,
+            model: model
+        )
+    }
+
+    private func removePrivilegedService(model: AppModel) async -> Bool {
+        await serviceManager.unregister()
+        model.privilegedServiceState = serviceManager.state
+
+        if let failure = serviceManager.lastUnregisterFailure {
+            failClosedAfterRemovalFailure(model: model)
+            switch failure.stage {
+            case .restore:
+                model.diagnosticMessage =
+                    "시스템 팬 제어 복귀를 확인하지 못해 권한 서비스를 제거하지 않았습니다. \(failure.message) 새 연결로 다시 승인한 뒤 재시도하세요."
+            case .unregister:
+                model.diagnosticMessage =
+                    "시스템 팬 제어로 복귀했지만 권한 서비스 제거에 실패했습니다. \(failure.message) 서비스는 등록된 상태이며 제거를 다시 시도할 수 있습니다."
+            }
+            return false
+        }
+
+        switch serviceManager.state {
+        case .notRegistered:
+            model.markSystemAuto()
+            model.requiresFreshPrivilegedConfirmation = false
+            model.diagnosticMessage =
+                "실험적 권한 서비스를 제거했습니다."
+            return true
+        case .failed(let message):
+            model.diagnosticMessage =
+                "권한 서비스를 제거하지 못했습니다. \(message)"
+            return false
+        default:
+            model.diagnosticMessage =
+                "권한 서비스가 아직 등록되어 있습니다. 다시 시도하세요."
+            return false
+        }
+    }
+
+    private func shouldUseLegacyFallback(model: AppModel) -> Bool {
+        legacyFallbackEnabled() || model.legacyFallbackEnabled
+    }
+
+    func restoreForPrivilegedServiceRemoval() async throws {
+        guard let coordinator else {
+            throw PrivilegedServiceRemovalRuntimeError
+                .missingCoordinator
+        }
+
+        try await coordinator.restoreSystemAuto()
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        await coordinator.restoreAndShutdown()
+        self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
+        terminationBox.set(nil)
+        model?.ipcConnected = false
+        model?.markSystemAuto()
+    }
+
+    private func failClosedAfterRemovalFailure(model: AppModel) {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
+        terminationBox.set(nil)
+        model.ipcConnected = false
+        model.pendingPrivilegedMode = nil
+        model.isPrivilegedApprovalPresented = false
+        model.settings.mode = .systemAuto
+        model.controlStatus = .failed
+        model.requiresFreshPrivilegedConfirmation = true
     }
 
     private func installLifecycleObservers() {
@@ -247,9 +665,27 @@ final class RuntimeController: ObservableObject {
             await coordinator.restoreAndShutdown()
         }
         self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
         terminationBox.set(nil)
         model?.ipcConnected = false
         model?.markSystemAuto()
+    }
+}
+
+private struct StaleModeRequestError: Error {}
+
+private enum PrivilegedServiceRemovalRuntimeError: LocalizedError {
+    case unavailable
+    case missingCoordinator
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "팬 제어 런타임을 사용할 수 없습니다."
+        case .missingCoordinator:
+            "System 모드 복귀를 확인할 제어 연결이 없습니다."
+        }
     }
 }
 

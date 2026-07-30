@@ -1,72 +1,107 @@
 # PenguinFan
 
-Free and open-source native macOS fan controller for the M2 Max MacBook Pro.
+[English](README.md) | [한국어](README.ko.md)
 
-M2 Max MacBook Pro용 무료 오픈소스 네이티브 팬 컨트롤러입니다. SwiftUI로
-작성되어 Python이나 외부 런타임이 필요하지 않습니다.
+PenguinFan is a free and open-source native macOS fan controller for the
+M2 Max MacBook Pro. It provides a lightweight SwiftUI menu bar interface,
+live temperature and RPM monitoring, manual control, and a temperature-based
+fan curve.
 
-> **Free forever:** This project is distributed at no charge under the
-> [MIT License](LICENSE). You may use, study, modify, and redistribute it.
+> **Free forever:** PenguinFan is distributed at no charge under the
+> [MIT License](LICENSE). You may use, study, modify, and redistribute it,
+> including for commercial purposes.
+
+## Experimental release
+
+`v1.1.0-experimental.1` replaces the previous `osascript` administrator
+launcher with a signed `SMAppService` LaunchDaemon and privileged XPC
+connection.
+
+This release is:
+
+- Verified on one `Mac14,6` M2 Max MacBook Pro
+- Signed with an Apple Development certificate
+- Not notarized by Apple
+- Published as a prerelease for testing
+
+Gatekeeper may block the installer or app on another Mac. If you trust the
+download, use **System Settings > Privacy & Security > Open Anyway**. Do not
+use this build on unsupported hardware without reviewing the diagnostics and
+fan ranges first.
 
 ## Features
 
-- Native SwiftUI dashboard and menu bar interface
-- Live CPU hotspot temperature and dual-fan RPM monitoring
-- macOS system automatic mode
+- Native SwiftUI menu bar app
+- Animated penguin menu bar icon that responds to fan speed
+- Live maximum sensor temperature
+- Dual-fan current and target RPM monitoring
+- macOS automatic fan mode
+- Temperature-based curve mode
 - Fixed manual RPM mode
-- Temperature-based fan curve mode
 - Per-fan hardware range validation
-- Privileged write agent with local Unix socket IPC
-- Heartbeat watchdog and automatic macOS control restoration
-- Read-only diagnostics bundled with the app
+- Root helper managed by `SMAppService`
+- Privileged XPC client validation using live code identity
+- LaunchDaemon `SpawnConstraint` for signing identifier, Team ID, and signing
+  category
+- Six-second heartbeat watchdog
+- Automatic restoration to macOS fan control
+- Read-only hardware diagnostics
 
-## Verified hardware
+## Verified hardware and result
 
-The current release is specifically validated on:
+The current prerelease was validated on:
 
-- Mac model: `Mac14,6`
-- Chip: Apple M2 Max
-- Fan 1 range: `1350-5349 RPM`
-- Fan 2 range: `1522-5777 RPM`
-- Curve sensor: `TCMz` CPU die hotspot
-- macOS: Apple Silicon
+| Item | Value |
+| --- | --- |
+| Model | `Mac14,6` |
+| Chip | Apple M2 Max |
+| Fan 1 range | `1350-5349 RPM` |
+| Fan 2 range | `1522-5777 RPM` |
+| Curve sensor | `TCMz` CPU die hotspot |
+| Minimum macOS | macOS 13 |
 
-Real hardware verification performed for v1.0.3:
+Real hardware Curve test on July 30, 2026:
 
-- Manual test: Fan 1 requested `1650 RPM` for 5 seconds and responded up to
-  `1666 RPM`.
-- Curve test at `87.21 C`: Fan 1 reached `5307/5349 RPM`; Fan 2 reached
-  `5721/5777 RPM`.
-- Both tests restored `F0Md=0` and `F1Md=0` after completion.
-- The related SMCKit test suite passed all 11 tests.
+- Temperature: approximately `78 C`
+- Curve target: `4873 RPM`
+- Fan 1 response: `4922 RPM`
+- Fan 2 response: `4921 RPM`
+- System restoration: successful
+- Restored readings: approximately `1990 / 2158 RPM`
+- XPC validation: `accepted reason=validated`
+- Privileged helper exit after restoration: exit code `0`
 
-Other Apple Silicon models may expose different SMC keys and fan ranges. They
-should be treated as unsupported until tested.
+Other Apple Silicon models may use different SMC keys and fan ranges and are
+currently unsupported.
 
-## Download
+## Download and install
 
-Download the latest free installer from
-[GitHub Releases](../../releases/latest).
+1. Download `PenguinFan-Experimental-1.1.0.pkg` from
+   [GitHub Releases](../../releases).
+2. Open the package and complete the installer.
+3. Launch `/Applications/PenguinFan Experimental.app`.
+4. Select **Curve** or **Manual**, review the permission explanation, and
+   choose **Continue**.
+5. If macOS requests approval, enable PenguinFan under
+   **System Settings > General > Login Items & Extensions**.
 
-The installer places the app at:
+The app monitors temperatures without administrator privileges. The privileged
+service starts only when fan control is requested.
 
-```text
-/Applications/PenguinFan.app
-```
+## Safety design
 
-The release is locally ad-hoc signed and is not Apple-notarized. macOS may show
-a Gatekeeper warning on another Mac.
+- The helper accepts only status, heartbeat, bounded RPM, restore, and shutdown
+  commands.
+- The live client must match the expected executable path, signing identifier,
+  Team ID, console user, and secure installation path.
+- The LaunchDaemon only runs the expected signed helper.
+- A lost heartbeat, connection failure, sleep event, sensor failure, app exit,
+  or explicit System selection restores both fans to macOS automatic control.
+- Critical macOS thermal pressure requests the maximum supported fan speed.
 
-## How it works
-
-- Monitoring is read-only and does not require administrator privileges.
-- Selecting Curve or Manual mode requests administrator approval.
-- The privileged agent accepts only status, heartbeat, bounded fan RPM,
-  restore, and shutdown commands.
-- If heartbeat is lost for 6 seconds, the sensor fails, the Mac sleeps, or the
-  app exits, both fans are returned to macOS automatic control.
-- Critical macOS thermal pressure always requests each fan's maximum supported
-  RPM.
+Direct fan control can affect cooling, noise, component temperature, and
+hardware lifespan. This software is experimental and provided without
+warranty.
 
 ## Build from source
 
@@ -76,54 +111,36 @@ Requirements:
 - Apple Silicon Mac
 - Xcode with Swift 6 support
 
-Build and run:
-
-```bash
-./script/build_and_run.sh
-```
-
-Build without launching:
+Build the standard local app:
 
 ```bash
 ./script/build_and_run.sh --verify
 ```
 
-Run the read-only hardware diagnostic:
+Run tests:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcrun swift test
+```
+
+Run read-only diagnostics:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcrun swift run FanDiagnostics
 ```
 
-Build an installer:
-
-```bash
-./script/build_installer.sh 1.0.12
-open installer/PenguinFan-1.0.12.pkg
-```
-
-Run tests:
-
-```bash
-xcrun swift test
-```
+The experimental privileged package requires a valid signing identity. Forks
+must replace the hard-coded bundle identifiers and Team ID with their own
+values before distribution.
 
 ## Uninstall
 
-Return to System mode and quit the app first, then remove it:
-
-```bash
-sudo rm -rf /Applications/PenguinFan.app
-```
-
-The app does not install a LaunchDaemon or persistent root helper.
-
-## Safety warning
-
-Direct fan control can affect cooling, noise, component temperature, and
-hardware lifespan. This software is experimental and provided without warranty.
-Keep macOS automatic restoration enabled, monitor temperatures, and do not use
-untested builds on unsupported hardware.
+1. Select **System** mode and confirm that macOS is controlling the fans.
+2. Remove the privileged service from PenguinFan settings.
+3. Quit PenguinFan.
+4. Remove `/Applications/PenguinFan Experimental.app`.
 
 ## Open-source references
 
@@ -134,8 +151,8 @@ AppleSMC access and Apple Silicon fan research were informed by:
 - [angristan/MacThrottle](https://github.com/angristan/MacThrottle)
 - [ryyansafar/MacMonitor](https://github.com/ryyansafar/MacMonitor)
 
-Third-party license notices are included in `LICENSES/`.
+Third-party notices are included in `LICENSES/`.
 
 ## License
 
-MIT License. Free for personal and commercial use.
+[MIT License](LICENSE). Free for personal and commercial use.

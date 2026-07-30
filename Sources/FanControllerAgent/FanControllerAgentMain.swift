@@ -7,13 +7,15 @@ import SMCKit
 private enum FanControllerAgentMain {
     static func main() {
         do {
-            let arguments = try AgentArguments.parse(
+            let mode = try AgentMode.parse(
                 Array(CommandLine.arguments.dropFirst())
             )
-            try validateSocketParent(
-                path: arguments.socketPath,
-                ownerUID: arguments.ownerUID
-            )
+            if case .legacySocket(let arguments) = mode {
+                try validateSocketParent(
+                    path: arguments.socketPath,
+                    ownerUID: arguments.ownerUID
+                )
+            }
             let processLock = try AgentProcessLock()
             defer {
                 withExtendedLifetime(processLock) {}
@@ -31,41 +33,43 @@ private enum FanControllerAgentMain {
                 writer: writer,
                 capabilities: capabilities
             )
-            let socket = UnixSocketServer(path: arguments.socketPath)
-            try socket.start { request in
-                agent.handle(request)
-            }
-            guard chown(
-                arguments.socketPath,
-                arguments.ownerUID,
-                gid_t(bitPattern: -1)
-            ) == 0 else {
-                throw AgentStartupError.systemCall("chown", errno)
-            }
-            guard chmod(arguments.socketPath, 0o600) == 0 else {
-                throw AgentStartupError.systemCall("chmod", errno)
-            }
+            let endpoint = try startEndpoint(mode: mode, agent: agent)
 
             let shutdown = DispatchSemaphore(value: 0)
             agent.startWatchdog {
-                socket.close()
+                endpoint.close()
                 shutdown.signal()
             }
             let signals = installSignalHandlers {
                 agent.cleanup()
-                socket.close()
+                endpoint.close()
                 shutdown.signal()
             }
             shutdown.wait()
-            withExtendedLifetime(signals) {
+            withExtendedLifetime((signals, endpoint)) {
                 agent.cleanup()
-                socket.close()
+                _ = agent.waitForTerminationRestoration(
+                    timeout: .now() + 1
+                )
+                endpoint.close()
             }
         } catch {
             let message = "FanControllerAgent: \(error)\n"
             FileHandle.standardError.write(Data(message.utf8))
             exit(EXIT_FAILURE)
         }
+    }
+}
+
+private enum AgentMode {
+    case machService
+    case legacySocket(AgentArguments)
+
+    static func parse(_ arguments: [String]) throws -> AgentMode {
+        if arguments.isEmpty {
+            return .machService
+        }
+        return .legacySocket(try AgentArguments.parse(arguments))
     }
 }
 
@@ -89,10 +93,82 @@ private struct AgentArguments {
     }
 }
 
+private final class AgentEndpoint: @unchecked Sendable {
+    private let retainedObjects: [AnyObject]
+    private let closeHandler: () -> Void
+    private let lock = NSLock()
+    private var isClosed = false
+
+    init(
+        retaining retainedObjects: [AnyObject],
+        close: @escaping () -> Void
+    ) {
+        self.retainedObjects = retainedObjects
+        self.closeHandler = close
+    }
+
+    func close() {
+        let shouldClose = lock.withLock { () -> Bool in
+            guard !isClosed else {
+                return false
+            }
+            isClosed = true
+            return true
+        }
+        if shouldClose {
+            closeHandler()
+        }
+        withExtendedLifetime(retainedObjects) {}
+    }
+}
+
 private enum AgentStartupError: Error {
     case invalidArguments
     case invalidSocketParent
     case systemCall(String, Int32)
+}
+
+private func startEndpoint(
+    mode: AgentMode,
+    agent: AgentServer
+) throws -> AgentEndpoint {
+    switch mode {
+    case .machService:
+        let service = AgentXPCService(server: agent)
+        let delegate = AgentXPCListenerDelegate(
+            service: service,
+            validator: XPCClientValidator()
+        )
+        let listener = NSXPCListener(
+            machServiceName: AgentXPCService.machServiceName
+        )
+        listener.delegate = delegate
+        listener.resume()
+        return AgentEndpoint(
+            retaining: [service, delegate, listener],
+            close: { listener.invalidate() }
+        )
+
+    case .legacySocket(let arguments):
+        let socket = UnixSocketServer(path: arguments.socketPath)
+        try socket.start { request in
+            agent.handle(request)
+        }
+        guard chown(
+            arguments.socketPath,
+            arguments.ownerUID,
+            gid_t(bitPattern: -1)
+        ) == 0 else {
+            throw AgentStartupError.systemCall("chown", errno)
+        }
+        guard chmod(arguments.socketPath, 0o600) == 0 else {
+            throw AgentStartupError.systemCall("chmod", errno)
+        }
+        return AgentEndpoint(
+            retaining: [socket],
+            close: { socket.close() }
+        )
+    }
 }
 
 private func validateSocketParent(

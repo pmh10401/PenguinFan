@@ -86,9 +86,58 @@ struct SettingsView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
             }
+
+            Section("실험적 권한 서비스") {
+                LabeledContent(
+                    "상태",
+                    value: model.privilegedServiceStatusLabel
+                )
+
+                if model.canOpenPrivilegedApprovalSettings {
+                    Button("시스템 설정에서 승인") {
+                        model.openPrivilegedApprovalSettings()
+                    }
+                }
+
+                if model.canRemovePrivilegedService {
+                    Button(
+                        model.isPrivilegedServiceRemovalInProgress
+                            ? "제거 중..."
+                            : "권한 서비스 제거",
+                        role: .destructive
+                    ) {
+                        model.requestPrivilegedServiceRemoval()
+                    }
+                    .disabled(model.isPrivilegedServiceRemovalInProgress)
+                }
+
+                Text(
+                    "팬 제어에만 사용하는 실험적 macOS 권한 서비스입니다."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
         .navigationTitle(ProductBrand.settingsTitle)
+        .alert(
+            "권한 서비스를 제거할까요?",
+            isPresented:
+                $model.isPrivilegedServiceRemovalConfirmationPresented
+        ) {
+            Button("취소", role: .cancel) {
+                model.cancelPrivilegedServiceRemoval()
+            }
+            Button("제거", role: .destructive) {
+                Task {
+                    await model.confirmPrivilegedServiceRemoval()
+                }
+            }
+        } message: {
+            Text(
+                "먼저 macOS 시스템 팬 제어로 복귀하고 연결을 종료한 뒤 권한 서비스를 제거합니다."
+            )
+        }
     }
 }
