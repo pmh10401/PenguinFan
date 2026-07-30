@@ -48,6 +48,9 @@ private enum FanControllerAgentMain {
             shutdown.wait()
             withExtendedLifetime((signals, endpoint)) {
                 agent.cleanup()
+                _ = agent.waitForTerminationRestoration(
+                    timeout: .now() + 1
+                )
                 endpoint.close()
             }
         } catch {

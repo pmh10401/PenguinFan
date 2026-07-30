@@ -4,6 +4,19 @@ import OSLog
 import Security
 import SystemConfiguration
 
+enum FilesystemObjectKind: Sendable {
+    case directory
+    case regularFile
+    case other
+}
+
+struct FilesystemSecurityMetadata: Sendable {
+    let ownerUID: uid_t
+    let mode: mode_t
+    let kind: FilesystemObjectKind
+    let hasUnsafeExtendedACL: Bool
+}
+
 public final class XPCClientValidator: @unchecked Sendable {
     static let requiredBundlePath =
         "/Applications/PenguinFan Experimental.app"
@@ -21,17 +34,12 @@ public final class XPCClientValidator: @unchecked Sendable {
         signingIdentifier: String
     )
 
-    private static let protectedFilesystemObjects = [
-        (path: requiredBundlePath, isDirectory: true),
-        (
-            path: requiredBundlePath + "/Contents",
-            isDirectory: true
-        ),
-        (
-            path: requiredBundlePath + "/Contents/MacOS",
-            isDirectory: true
-        ),
-        (path: requiredExecutablePath, isDirectory: false),
+    static let requiredFilesystemPaths = [
+        "/Applications",
+        requiredBundlePath,
+        requiredBundlePath + "/Contents",
+        requiredBundlePath + "/Contents/MacOS",
+        requiredExecutablePath,
     ]
 
     private static let logger = Logger(
@@ -44,8 +52,8 @@ public final class XPCClientValidator: @unchecked Sendable {
     private let consoleUserUID: @Sendable () throws -> uid_t
     private let processCodeIdentity:
         @Sendable (pid_t) throws -> ProcessCodeIdentity
-    private let filesystemObjectIsSecure:
-        @Sendable (String, Bool) throws -> Bool
+    private let filesystemMetadata:
+        @Sendable (String) throws -> FilesystemSecurityMetadata
     private let logFailure: @Sendable (String) -> Void
 
     public convenience init() {
@@ -135,16 +143,8 @@ public final class XPCClientValidator: @unchecked Sendable {
                     signingIdentifier: signingIdentifier
                 )
             },
-            filesystemObjectIsSecure: { path, isDirectory in
-                var metadata = stat()
-                guard lstat(path, &metadata) == 0,
-                      metadata.st_uid == 0,
-                      metadata.st_mode & (S_IWGRP | S_IWOTH) == 0
-                else {
-                    return false
-                }
-                let expectedType: mode_t = isDirectory ? S_IFDIR : S_IFREG
-                return metadata.st_mode & S_IFMT == expectedType
+            filesystemMetadata: { path in
+                try XPCClientValidator.inspectFilesystemObject(path)
             },
             logFailure: { reason in
                 XPCClientValidator.logger.error(
@@ -160,14 +160,14 @@ public final class XPCClientValidator: @unchecked Sendable {
         consoleUserUID: @escaping @Sendable () throws -> uid_t,
         processCodeIdentity: @escaping @Sendable
             (pid_t) throws -> ProcessCodeIdentity,
-        filesystemObjectIsSecure: @escaping @Sendable
-            (String, Bool) throws -> Bool,
+        filesystemMetadata: @escaping @Sendable
+            (String) throws -> FilesystemSecurityMetadata,
         logFailure: @escaping @Sendable (String) -> Void
     ) {
         self.securityIdentity = securityIdentity
         self.consoleUserUID = consoleUserUID
         self.processCodeIdentity = processCodeIdentity
-        self.filesystemObjectIsSecure = filesystemObjectIsSecure
+        self.filesystemMetadata = filesystemMetadata
         self.logFailure = logFailure
     }
 
@@ -191,11 +191,17 @@ public final class XPCClientValidator: @unchecked Sendable {
                 logFailure("signing identifier mismatch")
                 return false
             }
-            for object in Self.protectedFilesystemObjects {
-                guard try filesystemObjectIsSecure(
-                    object.path,
-                    object.isDirectory
-                ) else {
+            for path in Self.requiredFilesystemPaths {
+                let metadata = try filesystemMetadata(path)
+                let expectedKind: FilesystemObjectKind =
+                    path == Self.requiredExecutablePath
+                        ? .regularFile
+                        : .directory
+                guard metadata.ownerUID == 0,
+                      metadata.mode & (S_IWGRP | S_IWOTH) == 0,
+                      metadata.kind == expectedKind,
+                      !metadata.hasUnsafeExtendedACL
+                else {
                     logFailure("installation permissions invalid")
                     return false
                 }
@@ -206,6 +212,99 @@ public final class XPCClientValidator: @unchecked Sendable {
             return false
         }
     }
+
+    private static func inspectFilesystemObject(
+        _ path: String
+    ) throws -> FilesystemSecurityMetadata {
+        var fileStatus = stat()
+        guard lstat(path, &fileStatus) == 0 else {
+            throw ValidationError.filesystemMetadataUnavailable
+        }
+        let fileType = fileStatus.st_mode & S_IFMT
+        let kind: FilesystemObjectKind
+        switch fileType {
+        case S_IFDIR:
+            kind = .directory
+        case S_IFREG:
+            kind = .regularFile
+        default:
+            kind = .other
+        }
+        return FilesystemSecurityMetadata(
+            ownerUID: fileStatus.st_uid,
+            mode: fileStatus.st_mode,
+            kind: kind,
+            hasUnsafeExtendedACL: try hasUnsafeExtendedACL(path)
+        )
+    }
+
+    private static func hasUnsafeExtendedACL(
+        _ path: String
+    ) throws -> Bool {
+        guard let acl = acl_get_file(path, ACL_TYPE_EXTENDED) else {
+            throw ValidationError.aclUnavailable
+        }
+        defer {
+            _ = acl_free(UnsafeMutableRawPointer(acl))
+        }
+
+        var entry: acl_entry_t?
+        var status = acl_get_entry(
+            acl,
+            Int32(ACL_FIRST_ENTRY.rawValue),
+            &entry
+        )
+        while status == 1 {
+            guard let currentEntry = entry else {
+                throw ValidationError.aclUnavailable
+            }
+            var tag = acl_tag_t(0)
+            guard acl_get_tag_type(currentEntry, &tag) == 0 else {
+                throw ValidationError.aclUnavailable
+            }
+            if tag == ACL_EXTENDED_ALLOW {
+                var permissions: acl_permset_t?
+                guard acl_get_permset(
+                    currentEntry,
+                    &permissions
+                ) == 0, let permissions else {
+                    throw ValidationError.aclUnavailable
+                }
+                for permission in unsafeACLPermissions {
+                    let result = acl_get_perm_np(
+                        permissions,
+                        permission
+                    )
+                    guard result >= 0 else {
+                        throw ValidationError.aclUnavailable
+                    }
+                    if result == 1 {
+                        return true
+                    }
+                }
+            }
+            status = acl_get_entry(
+                acl,
+                Int32(ACL_NEXT_ENTRY.rawValue),
+                &entry
+            )
+        }
+        guard status == 0 else {
+            throw ValidationError.aclUnavailable
+        }
+        return false
+    }
+
+    private static let unsafeACLPermissions: [acl_perm_t] = [
+        ACL_WRITE_DATA,
+        ACL_APPEND_DATA,
+        ACL_DELETE,
+        ACL_DELETE_CHILD,
+        ACL_WRITE_ATTRIBUTES,
+        ACL_WRITE_EXTATTRIBUTES,
+        ACL_WRITE_SECURITY,
+        ACL_CHANGE_OWNER,
+    ]
 }
 
 private enum ValidationError: Error {
@@ -214,4 +313,6 @@ private enum ValidationError: Error {
     case processCodeUnavailable
     case invalidProcessCode
     case processCodeMetadataUnavailable
+    case filesystemMetadataUnavailable
+    case aclUnavailable
 }

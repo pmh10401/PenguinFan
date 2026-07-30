@@ -9,11 +9,17 @@ public final class AgentServer: @unchecked Sendable {
     private let clock: () -> TimeInterval
     private let operationLock = NSLock()
     private let lock = NSLock()
+    private let restorationQueue = DispatchQueue(
+        label: "com.local.PenguinFan.agent.restoration",
+        qos: .userInitiated
+    )
+    private let restorationGroup = DispatchGroup()
 
     private var processedRequestIDs: Set<UUID> = []
     private var manualFanIndices: Set<Int> = []
     private var lastHeartbeat: TimeInterval
     private var terminated = false
+    private var restorationCompleted = false
     private var watchdog: DispatchSourceTimer?
     private var terminationHandler: (@Sendable () -> Void)?
 
@@ -35,9 +41,16 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     public func handle(_ request: ControlRequest) -> ControlResponse {
-        operationLock.withLock {
-            handleWhileHoldingOperationGate(request)
+        if let response = terminatedResponse(for: request.id) {
+            return response
         }
+
+        operationLock.lock()
+        defer {
+            restoreAfterTerminationIfNeeded()
+            operationLock.unlock()
+        }
+        return handleWhileHoldingOperationGate(request)
     }
 
     private func handleWhileHoldingOperationGate(
@@ -140,12 +153,16 @@ public final class AgentServer: @unchecked Sendable {
             }
 
         case .shutdown:
-            cleanupWhileHoldingOperationGate()
-            let handler = lock.withLock { terminationHandler }
+            let transition = beginTerminationIfNeeded(
+                watchdogMustBeExpired: false
+            )
+            if transition.didBegin {
+                scheduleRestoration()
+            }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(
                 deadline: .now() + 0.05
             ) {
-                handler?()
+                transition.handler?()
             }
             return ControlResponse(
                 id: request.id,
@@ -174,53 +191,100 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     public func checkWatchdog() {
-        operationLock.withLock {
-            checkWatchdogWhileHoldingOperationGate()
-        }
-    }
-
-    private func checkWatchdogWhileHoldingOperationGate() {
-        let shouldTerminate = lock.withLock { () -> Bool in
-            guard !terminated, clock() - lastHeartbeat >= 6 else {
-                return false
-            }
-            terminated = true
-            watchdog?.cancel()
-            watchdog = nil
-            return true
-        }
-        guard shouldTerminate else {
+        let transition = beginTerminationIfNeeded(
+            watchdogMustBeExpired: true
+        )
+        guard transition.didBegin else {
             return
         }
-
-        if let fans = capabilities?.fans {
-            try? writer.restoreSystemAuto(fans)
-        }
-        lock.withLock { terminationHandler?() }
+        scheduleRestoration()
+        transition.handler?()
     }
 
     public func cleanup() {
-        operationLock.withLock {
-            cleanupWhileHoldingOperationGate()
+        let transition = beginTerminationIfNeeded(
+            watchdogMustBeExpired: false
+        )
+        if transition.didBegin {
+            scheduleRestoration()
         }
     }
 
-    private func cleanupWhileHoldingOperationGate() {
-        let shouldRestore = lock.withLock { () -> Bool in
+    func waitForTerminationRestoration(
+        timeout: DispatchTime
+    ) -> Bool {
+        restorationGroup.wait(timeout: timeout) == .success
+    }
+
+    private func terminatedResponse(
+        for id: UUID
+    ) -> ControlResponse? {
+        lock.withLock {
+            guard terminated else {
+                return nil
+            }
+            return ControlResponse(
+                id: id,
+                result: .rejected(
+                    code: "terminated",
+                    message: "The control agent is terminating."
+                )
+            )
+        }
+    }
+
+    private func beginTerminationIfNeeded(
+        watchdogMustBeExpired: Bool
+    ) -> (
+        didBegin: Bool,
+        handler: (@Sendable () -> Void)?
+    ) {
+        lock.withLock {
             guard !terminated else {
-                return false
+                return (false, nil)
+            }
+            if watchdogMustBeExpired,
+               clock() - lastHeartbeat < 6 {
+                return (false, nil)
             }
             terminated = true
             watchdog?.cancel()
             watchdog = nil
-            return true
+            restorationGroup.enter()
+            return (true, terminationHandler)
+        }
+    }
+
+    private func scheduleRestoration() {
+        restorationQueue.async { [self] in
+            operationLock.lock()
+            restoreAfterTerminationIfNeeded()
+            operationLock.unlock()
+            restorationGroup.leave()
+        }
+    }
+
+    private func restoreAfterTerminationIfNeeded() {
+        let shouldRestore = lock.withLock {
+            terminated && !restorationCompleted
         }
         guard shouldRestore else {
             return
         }
-
-        if let fans = capabilities?.fans {
-            try? writer.restoreSystemAuto(fans)
+        guard let fans = capabilities?.fans else {
+            lock.withLock {
+                restorationCompleted = true
+            }
+            return
+        }
+        do {
+            try writer.restoreSystemAuto(fans)
+        } catch {
+            return
+        }
+        lock.withLock {
+            manualFanIndices.removeAll()
+            restorationCompleted = true
         }
     }
 

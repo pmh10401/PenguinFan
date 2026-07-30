@@ -112,8 +112,90 @@ final class AgentServerTests: XCTestCase {
             makeValidator(signingIdentifier: "com.local.Other").accepts(connection)
         )
         XCTAssertFalse(
-            makeValidator(filesystemObjectsSecure: false).accepts(connection)
+            makeValidator(
+                filesystemMetadata: { path in
+                    AgentServerTests.defaultSecureFilesystemMetadata(
+                        for: path,
+                        ownerUID: 501
+                    )
+                }
+            ).accepts(connection)
         )
+    }
+
+    func testXPCClientValidatorChecksEveryAncestorThroughApplications() {
+        let connection = NSXPCConnection(serviceName: "test.invalid")
+        defer { connection.invalidate() }
+        let inspector = RecordingFilesystemInspector { path in
+            AgentServerTests.defaultSecureFilesystemMetadata(for: path)
+        }
+
+        XCTAssertTrue(
+            makeValidator(
+                filesystemMetadata: inspector.inspect
+            ).accepts(connection)
+        )
+        XCTAssertEqual(
+            inspector.inspectedPaths,
+            XPCClientValidator.requiredFilesystemPaths
+        )
+        XCTAssertEqual(
+            inspector.inspectedPaths.first,
+            "/Applications"
+        )
+    }
+
+    func testXPCClientValidatorRejectsUnsafeModesTypesAndACLs() {
+        let connection = NSXPCConnection(serviceName: "test.invalid")
+        defer { connection.invalidate() }
+        let unsafeMetadata: [
+            (path: String, metadata: FilesystemSecurityMetadata)
+        ] = [
+            (
+                path: "/Applications",
+                metadata: secureFilesystemMetadata(
+                    for: "/Applications",
+                    mode: S_IFDIR | 0o775
+                )
+            ),
+            (
+                path: XPCClientValidator.requiredExecutablePath,
+                metadata: secureFilesystemMetadata(
+                    for: XPCClientValidator.requiredExecutablePath,
+                    mode: S_IFREG | 0o757
+                )
+            ),
+            (
+                path: XPCClientValidator.requiredBundlePath,
+                metadata: FilesystemSecurityMetadata(
+                    ownerUID: 0,
+                    mode: S_IFLNK | 0o755,
+                    kind: .other,
+                    hasUnsafeExtendedACL: false
+                )
+            ),
+            (
+                path: "/Applications",
+                metadata: secureFilesystemMetadata(
+                    for: "/Applications",
+                    hasUnsafeExtendedACL: true
+                )
+            ),
+        ]
+
+        for unsafe in unsafeMetadata {
+            XCTAssertFalse(
+                makeValidator(
+                    filesystemMetadata: { path in
+                        if path == unsafe.path {
+                            return unsafe.metadata
+                        }
+                        return AgentServerTests
+                            .defaultSecureFilesystemMetadata(for: path)
+                    }
+                ).accepts(connection)
+            )
+        }
     }
 
     func testXPCClientValidatorRejectsInspectionErrors() {
@@ -128,11 +210,22 @@ final class AgentServerTests: XCTestCase {
                     signingIdentifier: XPCClientValidator.requiredSigningIdentifier
                 )
             },
-            filesystemObjectIsSecure: { _, _ in true },
+            filesystemMetadata: { path in
+                AgentServerTests.defaultSecureFilesystemMetadata(
+                    for: path
+                )
+            },
             logFailure: { _ in }
         )
 
         XCTAssertFalse(validator.accepts(connection))
+        XCTAssertFalse(
+            makeValidator(
+                filesystemMetadata: { _ in
+                    throw ValidationTestError.failed
+                }
+            ).accepts(connection)
+        )
     }
 
     func testXPCListenerDelegateConfiguresAndExportsSharedService() {
@@ -166,12 +259,13 @@ final class AgentServerTests: XCTestCase {
         )
     }
 
-    func testCleanupQuiescesInflightWriteBeforeFinalRestore() {
+    func testWatchdogTerminatesWithoutWaitingForHungWrite() {
         let writer = BlockingFanWriter()
+        let clock = TestClock(now: 100)
         let server = AgentServer(
             writer: writer,
             capabilities: capabilities(),
-            clock: { 100 }
+            clock: { clock.now }
         )
         let requestFinished = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .userInitiated).async {
@@ -188,44 +282,43 @@ final class AgentServerTests: XCTestCase {
             .success
         )
 
-        let cleanupStarted = DispatchSemaphore(value: 0)
-        let cleanupFinished = DispatchSemaphore(value: 0)
+        clock.now = 107
+        let watchdogFinished = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .userInitiated).async {
-            cleanupStarted.signal()
-            server.cleanup()
-            cleanupFinished.signal()
+            server.checkWatchdog()
+            watchdogFinished.signal()
         }
-        XCTAssertEqual(
-            cleanupStarted.wait(timeout: .now() + 1),
-            .success
-        )
-        XCTAssertEqual(
-            cleanupFinished.wait(timeout: .now() + 0.1),
-            .timedOut
-        )
+        guard watchdogFinished.wait(timeout: .now() + 1) == .success else {
+            writer.allowWrite.signal()
+            _ = requestFinished.wait(timeout: .now() + 1)
+            _ = watchdogFinished.wait(timeout: .now() + 1)
+            return XCTFail("Watchdog waited for the blocked operation lock.")
+        }
+        XCTAssertTrue(server.isTerminated)
 
-        writer.allowWrite.signal()
-        XCTAssertEqual(
-            requestFinished.wait(timeout: .now() + 1),
-            .success
-        )
-        XCTAssertEqual(
-            cleanupFinished.wait(timeout: .now() + 1),
-            .success
-        )
-        XCTAssertEqual(writer.events, [.setRPM, .restore])
-
-        let response = server.handle(
+        let rejected = server.handle(
             ControlRequest(
                 id: UUID(),
                 command: .setRPM(fan: 0, rpm: 3_100)
             )
         )
         XCTAssertEqual(
-            response.result,
+            rejected.result,
             .rejected(
                 code: "terminated",
                 message: "The control agent is terminating."
+            )
+        )
+        XCTAssertEqual(writer.events, [])
+
+        writer.allowWrite.signal()
+        XCTAssertEqual(
+            requestFinished.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertTrue(
+            server.waitForTerminationRestoration(
+                timeout: .now() + 1
             )
         )
         XCTAssertEqual(writer.events, [.setRPM, .restore])
@@ -267,6 +360,11 @@ final class AgentServerTests: XCTestCase {
 
         now += 6.1
         server.checkWatchdog()
+        XCTAssertTrue(
+            server.waitForTerminationRestoration(
+                timeout: .now() + 1
+            )
+        )
 
         XCTAssertEqual(writer.restoreCalls, [[fan()]])
         XCTAssertTrue(server.isTerminated)
@@ -387,7 +485,11 @@ final class AgentServerTests: XCTestCase {
         consoleUID: uid_t = 501,
         executablePath: String = XPCClientValidator.requiredExecutablePath,
         signingIdentifier: String = XPCClientValidator.requiredSigningIdentifier,
-        filesystemObjectsSecure: Bool = true
+        filesystemMetadata: @escaping @Sendable
+            (String) throws -> FilesystemSecurityMetadata = {
+                path in
+                AgentServerTests.defaultSecureFilesystemMetadata(for: path)
+            }
     ) -> XPCClientValidator {
         XPCClientValidator(
             securityIdentity: { _ in
@@ -400,16 +502,93 @@ final class AgentServerTests: XCTestCase {
                     signingIdentifier: signingIdentifier
                 )
             },
-            filesystemObjectIsSecure: { _, _ in
-                filesystemObjectsSecure
-            },
+            filesystemMetadata: filesystemMetadata,
             logFailure: { _ in }
+        )
+    }
+
+    private func secureFilesystemMetadata(
+        for path: String,
+        ownerUID: uid_t = 0,
+        mode: mode_t? = nil,
+        hasUnsafeExtendedACL: Bool = false
+    ) -> FilesystemSecurityMetadata {
+        Self.defaultSecureFilesystemMetadata(
+            for: path,
+            ownerUID: ownerUID,
+            mode: mode,
+            hasUnsafeExtendedACL: hasUnsafeExtendedACL
+        )
+    }
+
+    private static func defaultSecureFilesystemMetadata(
+        for path: String,
+        ownerUID: uid_t = 0,
+        mode: mode_t? = nil,
+        hasUnsafeExtendedACL: Bool = false
+    ) -> FilesystemSecurityMetadata {
+        let isExecutable =
+            path == XPCClientValidator.requiredExecutablePath
+        return FilesystemSecurityMetadata(
+            ownerUID: ownerUID,
+            mode: mode ?? (
+                isExecutable
+                    ? S_IFREG | 0o755
+                    : S_IFDIR | 0o755
+            ),
+            kind: isExecutable ? .regularFile : .directory,
+            hasUnsafeExtendedACL: hasUnsafeExtendedACL
         )
     }
 }
 
 private enum ValidationTestError: Error {
     case failed
+}
+
+private final class RecordingFilesystemInspector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let metadata:
+        @Sendable (String) throws -> FilesystemSecurityMetadata
+    private var paths: [String] = []
+
+    init(
+        metadata: @escaping @Sendable
+            (String) throws -> FilesystemSecurityMetadata
+    ) {
+        self.metadata = metadata
+    }
+
+    var inspectedPaths: [String] {
+        lock.withLock { paths }
+    }
+
+    func inspect(_ path: String) throws -> FilesystemSecurityMetadata {
+        lock.withLock {
+            paths.append(path)
+        }
+        return try metadata(path)
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNow: TimeInterval
+
+    init(now: TimeInterval) {
+        self.storedNow = now
+    }
+
+    var now: TimeInterval {
+        get {
+            lock.withLock { storedNow }
+        }
+        set {
+            lock.withLock {
+                storedNow = newValue
+            }
+        }
+    }
 }
 
 private final class BlockingFanWriter: FanWriting, @unchecked Sendable {
