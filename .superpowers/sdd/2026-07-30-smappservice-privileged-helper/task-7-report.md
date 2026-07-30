@@ -265,3 +265,196 @@ Task 7 can continue only after the user installs
 normal macOS administrator authorization themselves. Subsequent validation must
 begin by rechecking the stable process baseline and installed experimental
 bundle before launching it.
+
+---
+
+## Resumed validation after administrator installation
+
+The user completed installation through the macOS Installer UI. Validation
+resumed at 2026-07-30 14:04 KST without requesting or handling credentials.
+
+### Resumed PASS
+
+- `/Applications/PenguinFan Experimental.app` exists and is owned by
+  `root:wheel`.
+- Installed identity is `com.local.PenguinFan.experimental`.
+- Installed display name is `PenguinFan Experimental`.
+- Installed version is `1.1.0` and build is `14`.
+- Deep/strict signature verification passed for the installed experimental app.
+- Main and helper executables exist and are executable.
+- The embedded LaunchDaemon plist exists and passes `plutil -lint`.
+- Embedded service values match the experimental contract.
+- Stable PenguinFan remains `com.local.M2MaxFanController`, version 1.0.12,
+  build 13, with a valid deep/strict signature.
+- Stable app and stable legacy agent remained running throughout this resumed
+  validation.
+- Experimental app launch succeeded and produced one additional
+  `FanControllerApp` process.
+- System-mode launch did not register or launch the experimental daemon.
+- No `osascript` process was present before or after experimental launch.
+
+### Resumed FAIL
+
+- None demonstrated.
+
+### Resumed BLOCKED
+
+- Curve/Manual selection and the PenguinFan explanation sheet.
+- User approval of the experimental LaunchDaemon.
+- SMAppService enabled state and privileged XPC readiness.
+- Experimental helper process count while custom control is active.
+- Bounded Curve/Manual write and measured RPM response.
+- System restoration after custom control.
+- Watchdog, sleep/wake, safe unregister, and unrelated-client rejection.
+
+The blocker is UI accessibility, not administrator credentials. The installed
+app is an `LSUIElement` menu-bar application with no window. Computer Use could
+not attach to either the experimental bundle identifier or its executable and
+therefore could not safely identify or click its status item. Coordinate
+guessing was not used because it could activate the stable app or another
+menu-bar item.
+
+The next observable boundary is a user click on the experimental PenguinFan
+menu-bar icon followed by selecting Curve. The validator can then inspect the
+explanation/approval UI and continue without entering credentials.
+
+## Resumed evidence
+
+### Installed experimental bundle
+
+Commands:
+
+```bash
+/bin/ls -ld '/Applications/PenguinFan Experimental.app'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+  '/Applications/PenguinFan Experimental.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' \
+  '/Applications/PenguinFan Experimental.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  '/Applications/PenguinFan Experimental.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  '/Applications/PenguinFan Experimental.app/Contents/Info.plist'
+/usr/bin/codesign --verify --deep --strict --verbose=2 \
+  '/Applications/PenguinFan Experimental.app'
+/bin/ls -l \
+  '/Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp' \
+  '/Applications/PenguinFan Experimental.app/Contents/Helpers/FanControllerAgent' \
+  '/Applications/PenguinFan Experimental.app/Contents/Library/LaunchDaemons/com.local.PenguinFan.experimental.agent.plist'
+/usr/bin/plutil -lint \
+  '/Applications/PenguinFan Experimental.app/Contents/Library/LaunchDaemons/com.local.PenguinFan.experimental.agent.plist'
+```
+
+Observed:
+
+```text
+drwxr-xr-x root wheel /Applications/PenguinFan Experimental.app
+com.local.PenguinFan.experimental
+PenguinFan Experimental
+1.1.0
+14
+/Applications/PenguinFan Experimental.app: valid on disk
+/Applications/PenguinFan Experimental.app: satisfies its Designated Requirement
+FanControllerApp executable exists, root:wheel, mode 0755
+FanControllerAgent executable exists, root:wheel, mode 0755
+embedded LaunchDaemon plist exists, root:wheel, mode 0644
+embedded LaunchDaemon plist: OK
+```
+
+Embedded plist values:
+
+```text
+Label = com.local.PenguinFan.experimental.agent
+BundleProgram = Contents/Helpers/FanControllerAgent
+ProcessType = Interactive
+MachServices:com.local.PenguinFan.experimental.agent = true
+```
+
+Package receipt evidence:
+
+```text
+com.local.M2MaxFanController
+com.local.PenguinFan.experimental
+com.local.fancontroller
+```
+
+### Stable baseline after experimental installation
+
+Commands:
+
+```bash
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+  '/Applications/PenguinFan.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  '/Applications/PenguinFan.app/Contents/Info.plist'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  '/Applications/PenguinFan.app/Contents/Info.plist'
+/usr/bin/codesign --verify --deep --strict --verbose=2 \
+  '/Applications/PenguinFan.app'
+/usr/bin/pgrep -x FanControllerApp
+/usr/bin/pgrep -x FanControllerAgent
+```
+
+Observed:
+
+```text
+com.local.M2MaxFanController
+1.0.12
+13
+/Applications/PenguinFan.app: valid on disk
+/Applications/PenguinFan.app: satisfies its Designated Requirement
+stable FanControllerApp PID 97073
+stable legacy FanControllerAgent PID 97209
+```
+
+### System-mode experimental launch
+
+Command:
+
+```bash
+/usr/bin/open -n '/Applications/PenguinFan Experimental.app'
+/bin/sleep 3
+/usr/bin/pgrep -x FanControllerApp
+/usr/bin/pgrep -x FanControllerAgent
+/usr/bin/pgrep -x osascript
+/bin/launchctl print system/com.local.PenguinFan.experimental.agent
+```
+
+Observed:
+
+```text
+experimental FanControllerApp PID 44588, UID 501
+stable FanControllerApp PID 97073, UID 501
+stable legacy FanControllerAgent PID 97209, UID 0
+no experimental FanControllerAgent process
+osascript PIDS=none
+Could not find service "com.local.PenguinFan.experimental.agent" in domain for system
+```
+
+This proves the installed experimental app can launch read-only in System mode
+without registering the privileged service. It does not prove the later
+approval or control path.
+
+### GUI automation boundary
+
+Read-only Computer Use attempts:
+
+```text
+target com.local.PenguinFan.experimental:
+Computer Use server error -10005: timeoutReached
+
+target /Applications/PenguinFan Experimental.app:
+Computer Use is not active for the app
+
+target FanControllerApp:
+Invalid app: FanControllerApp
+```
+
+No menu-bar coordinate click, AppleScript, `osascript`, password input, service
+registration, or SMC write was attempted.
+
+## Resumed status
+
+Task 7 is not fully complete. Installation and System-mode isolation are now
+validated. The exact remaining interaction is for the user to open the
+experimental PenguinFan menu-bar item and select Curve so the approval flow
+becomes observable.
