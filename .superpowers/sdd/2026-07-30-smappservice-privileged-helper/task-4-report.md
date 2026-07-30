@@ -320,3 +320,50 @@ Result:
 ```text
 Build of product 'FanControllerApp' complete! (2.88s)
 ```
+
+## Fix Round 4/5: Await Stale Request Terminal Completion
+
+### Test Synchronization Fix
+
+- Captured the old Curve request generation in each stale-connection runtime
+  test and installed a generation-specific bounded completion expectation.
+- Delivered the stale invalidation or interruption and awaited both Runtime's
+  connection-identity classification and the old Curve mode-request Task's
+  terminal completion before asserting protected state.
+- Explicitly awaited the newer System or Manual mode-request Task completion
+  before delivering the old connection event.
+- Added pending-mode assertions alongside mode, status, diagnostic, and
+  connection-state assertions.
+- All expectations use a one-second timeout and cannot hang.
+- No production source changes were required.
+
+### Focused Tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result:
+
+```text
+Executed 26 tests, with 0 failures (0 unexpected).
+Test Suite 'Selected tests' passed.
+```
+
+### Release Build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete! (0.18s)
+```

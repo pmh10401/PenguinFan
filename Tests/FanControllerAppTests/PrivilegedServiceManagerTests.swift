@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 import FanControllerCore
 import ServiceManagement
@@ -316,6 +315,24 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         let staleEventProcessed = expectation(
             description: "Old invalidation processed"
         )
+        let oldCurveRequestCompleted = expectation(
+            description: "Old Curve request completed after invalidation"
+        )
+        let systemRequestCompleted = expectation(
+            description: "Newer System request completed"
+        )
+        let oldCurveGeneration = modelGeneration(after: 0)
+        let systemGeneration = modelGeneration(after: oldCurveGeneration)
+        runtime.modeRequestCompletionObserver = { generation in
+            switch generation {
+            case oldCurveGeneration:
+                oldCurveRequestCompleted.fulfill()
+            case systemGeneration:
+                systemRequestCompleted.fulfill()
+            default:
+                XCTFail("Unexpected mode request generation \(generation)")
+            }
+        }
         runtime.connectionFailureEventObserver = { isActive in
             XCTAssertFalse(isActive)
             staleEventProcessed.fulfill()
@@ -330,21 +347,17 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         model.selectMode(.curve)
         await waitForRequest(oldConnection)
-        let systemApplied = expectation(
-            description: "Newer System mode applied"
-        )
-        var statusObservation: AnyCancellable? = model.$controlStatus
-            .filter { $0 == .systemAuto }
-            .sink { _ in systemApplied.fulfill() }
         model.selectMode(.systemAuto)
-        await fulfillment(of: [systemApplied], timeout: 1)
+        await fulfillment(of: [systemRequestCompleted], timeout: 1)
         oldConnection.invalidationHandler?()
-        await fulfillment(of: [staleEventProcessed], timeout: 1)
-        withExtendedLifetime(statusObservation) {}
-        statusObservation = nil
+        await fulfillment(
+            of: [staleEventProcessed, oldCurveRequestCompleted],
+            timeout: 1
+        )
 
         XCTAssertEqual(model.settings.mode, .systemAuto)
         XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertNil(model.pendingPrivilegedMode)
         XCTAssertNil(model.diagnosticMessage)
         XCTAssertFalse(model.ipcConnected)
     }
@@ -386,6 +399,24 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         let staleEventProcessed = expectation(
             description: "Old connection event processed"
         )
+        let oldCurveRequestCompleted = expectation(
+            description: "Old Curve request completed after stale event"
+        )
+        let manualRequestCompleted = expectation(
+            description: "Newer Manual request completed"
+        )
+        let oldCurveGeneration = modelGeneration(after: 0)
+        let manualGeneration = modelGeneration(after: oldCurveGeneration)
+        runtime.modeRequestCompletionObserver = { generation in
+            switch generation {
+            case oldCurveGeneration:
+                oldCurveRequestCompleted.fulfill()
+            case manualGeneration:
+                manualRequestCompleted.fulfill()
+            default:
+                XCTFail("Unexpected mode request generation \(generation)")
+            }
+        }
         runtime.connectionFailureEventObserver = { isActive in
             XCTAssertFalse(isActive)
             staleEventProcessed.fulfill()
@@ -400,12 +431,6 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         model.selectMode(.curve)
         await waitForRequest(oldConnection)
-        let manualApplied = expectation(
-            description: "Newer Manual mode applied"
-        )
-        var statusObservation: AnyCancellable? = model.$controlStatus
-            .filter { $0 == .manual }
-            .sink { _ in manualApplied.fulfill() }
         model.selectMode(.manual)
         await waitForRequest(currentConnection)
         try currentConnection.replyToHeldRequest(
@@ -417,14 +442,16 @@ final class PrivilegedServiceManagerTests: XCTestCase {
                 )
             )
         )
-        await fulfillment(of: [manualApplied], timeout: 1)
+        await fulfillment(of: [manualRequestCompleted], timeout: 1)
         event.deliver(to: oldConnection)
-        await fulfillment(of: [staleEventProcessed], timeout: 1)
-        withExtendedLifetime(statusObservation) {}
-        statusObservation = nil
+        await fulfillment(
+            of: [staleEventProcessed, oldCurveRequestCompleted],
+            timeout: 1
+        )
 
         XCTAssertEqual(model.settings.mode, .manual)
         XCTAssertEqual(model.controlStatus, .manual)
+        XCTAssertNil(model.pendingPrivilegedMode)
         XCTAssertNil(model.diagnosticMessage)
         XCTAssertTrue(model.ipcConnected)
     }
@@ -792,6 +819,10 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             }
         }
         XCTAssertTrue(received)
+    }
+
+    private func modelGeneration(after generation: UInt64) -> UInt64 {
+        generation &+ 1
     }
 }
 
