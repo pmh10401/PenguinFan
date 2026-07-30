@@ -12,7 +12,13 @@ final class AppModel: ObservableObject {
     @Published var diagnosticMessage: String?
     @Published var capabilities: HardwareCapabilities?
     @Published var ipcConnected = false
+    @Published var privilegedServiceState: PrivilegedServiceState =
+        .notRegistered
+    @Published var pendingPrivilegedMode: ControlMode?
+    @Published var isPrivilegedApprovalPresented = false
     var modeRequestHandler: ((ControlMode) -> Void)?
+    var privilegedApprovalHandler: (() async -> Void)?
+    var privilegedApprovalSettingsHandler: (() -> Void)?
 
     init(settings: FanSettings = .safeDefaults) {
         self.settings = settings
@@ -58,6 +64,19 @@ final class AppModel: ObservableObject {
     }
 
     func selectMode(_ mode: ControlMode) {
+        if mode != .systemAuto,
+           privilegedServiceState != .enabled {
+            settings.mode = .systemAuto
+            pendingPrivilegedMode = mode
+            isPrivilegedApprovalPresented = true
+            controlStatus = .authorizing
+            diagnosticMessage =
+                "계속을 선택해야 권한 서비스 등록을 시작합니다."
+            return
+        }
+
+        pendingPrivilegedMode = nil
+        isPrivilegedApprovalPresented = false
         settings.mode = mode
         if mode == .systemAuto {
             controlStatus = .restoring
@@ -70,11 +89,40 @@ final class AppModel: ObservableObject {
         modeRequestHandler?(mode)
     }
 
+    func confirmPrivilegedApproval() async {
+        await privilegedApprovalHandler?()
+    }
+
+    func cancelPrivilegedApproval() {
+        pendingPrivilegedMode = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = .systemAuto
+        controlStatus = .systemAuto
+        diagnosticMessage =
+            "권한 요청을 취소했습니다. macOS 시스템 팬 제어를 유지합니다."
+    }
+
+    func openPrivilegedApprovalSettings() {
+        privilegedApprovalSettingsHandler?()
+    }
+
+    func applyPendingPrivilegedMode() -> ControlMode? {
+        guard let pendingPrivilegedMode else {
+            return nil
+        }
+        self.pendingPrivilegedMode = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = pendingPrivilegedMode
+        return pendingPrivilegedMode
+    }
+
     func returnToSystemAuto() {
         selectMode(.systemAuto)
     }
 
     func markSystemAuto() {
+        pendingPrivilegedMode = nil
+        isPrivilegedApprovalPresented = false
         settings.mode = .systemAuto
         controlStatus = .systemAuto
         diagnosticMessage = nil

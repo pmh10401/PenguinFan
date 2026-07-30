@@ -6,6 +6,8 @@ import SMCKit
 @MainActor
 final class RuntimeController: ObservableObject {
     private let launcher = AuthorizationLauncher()
+    private let injectedServiceManager: PrivilegedServiceManager?
+    private let legacyFallbackEnabled: () -> Bool
     private let terminationBox = TerminationCoordinatorBox()
     private var coordinator: ControlCoordinator?
     private var sensorTask: Task<Void, Never>?
@@ -15,20 +17,57 @@ final class RuntimeController: ObservableObject {
     private var lastSnapshotAt: Date?
     private weak var model: AppModel?
 
-    func start(model: AppModel) {
+    private lazy var defaultServiceManager = PrivilegedServiceManager(
+        restoreSystemModeAndDisconnect: { [weak self] in
+            await self?.restoreAndShutdown()
+        },
+        connectionFailureHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.handleConnectionFailure()
+            }
+        }
+    )
+
+    private var serviceManager: PrivilegedServiceManager {
+        injectedServiceManager ?? defaultServiceManager
+    }
+
+    init(
+        serviceManager: PrivilegedServiceManager? = nil,
+        legacyFallbackEnabled: @escaping () -> Bool = { false }
+    ) {
+        injectedServiceManager = serviceManager
+        self.legacyFallbackEnabled = legacyFallbackEnabled
+    }
+
+    func start(model: AppModel, startSensors: Bool = true) {
         guard !started else {
             return
         }
         started = true
         self.model = model
+        serviceManager.refreshStatus()
+        model.privilegedServiceState = serviceManager.state
         model.modeRequestHandler = { [weak self, weak model] mode in
             guard let self, let model else {
                 return
             }
             Task { await self.request(mode: mode, model: model) }
         }
+        model.privilegedApprovalHandler = { [weak self, weak model] in
+            guard let self, let model else {
+                return
+            }
+            await self.confirmPrivilegedControl(model: model)
+        }
+        model.privilegedApprovalSettingsHandler = {
+            [weak self] in
+            self?.serviceManager.openApprovalSettings()
+        }
         installLifecycleObservers()
-        startReadOnlySensors(model: model)
+        if startSensors {
+            startReadOnlySensors(model: model)
+        }
     }
 
     private func startReadOnlySensors(model: AppModel) {
@@ -106,6 +145,54 @@ final class RuntimeController: ObservableObject {
         }
     }
 
+    private func confirmPrivilegedControl(model: AppModel) async {
+        guard model.pendingPrivilegedMode != nil else {
+            return
+        }
+
+        serviceManager.refreshStatus()
+        if serviceManager.state == .notRegistered {
+            serviceManager.register()
+        }
+        model.privilegedServiceState = serviceManager.state
+
+        switch serviceManager.state {
+        case .enabled:
+            guard let mode = model.applyPendingPrivilegedMode() else {
+                return
+            }
+            await request(mode: mode, model: model)
+        case .requiresApproval:
+            model.settings.mode = .systemAuto
+            model.controlStatus = .authorizing
+            model.isPrivilegedApprovalPresented = true
+            model.diagnosticMessage =
+                "시스템 설정의 로그인 항목에서 PenguinFan 권한 서비스를 승인한 뒤 계속을 다시 선택하세요."
+        case .failed(let message):
+            if legacyFallbackEnabled(),
+               let mode = model.applyPendingPrivilegedMode() {
+                await request(mode: mode, model: model)
+            } else {
+                await failPendingApproval(message, model: model)
+            }
+        case .notFound:
+            if legacyFallbackEnabled(),
+               let mode = model.applyPendingPrivilegedMode() {
+                await request(mode: mode, model: model)
+            } else {
+                await failPendingApproval(
+                    "앱에 실험적 권한 서비스가 포함되어 있지 않습니다.",
+                    model: model
+                )
+            }
+        case .notRegistered, .registering:
+            await failPendingApproval(
+                "권한 서비스 등록이 완료되지 않았습니다.",
+                model: model
+            )
+        }
+    }
+
     private func ensureCoordinator(
         model: AppModel
     ) async throws -> ControlCoordinator {
@@ -118,9 +205,20 @@ final class RuntimeController: ObservableObject {
             )
         }
 
-        let socketURL = try await launcher.startAgent()
+        let client: any ControlClient
+        if legacyFallbackEnabled() {
+            let socketURL = try await launcher.startAgent()
+            client = UnixSocketControlClient(path: socketURL.path)
+        } else {
+            guard serviceManager.state == .enabled else {
+                throw AuthorizationLauncherError.agentFailed(
+                    "권한 서비스가 활성화되지 않았습니다."
+                )
+            }
+            client = serviceManager.makeControlClient()
+        }
         let coordinator = ControlCoordinator(
-            client: UnixSocketControlClient(path: socketURL.path),
+            client: client,
             settings: model.settings,
             fans: fans
         )
@@ -185,12 +283,43 @@ final class RuntimeController: ObservableObject {
         _ error: Error,
         model: AppModel
     ) async {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         if let coordinator {
             try? await coordinator.restoreSystemAuto()
         }
+        self.coordinator = nil
+        terminationBox.set(nil)
+        model.ipcConnected = false
         model.controlStatus = .failed
         model.settings.mode = .systemAuto
-        model.diagnosticMessage = error.localizedDescription
+        model.privilegedServiceState = .failed(
+            error.localizedDescription
+        )
+        model.diagnosticMessage =
+            "팬 제어 권한 서비스에 연결하지 못했습니다. \(error.localizedDescription) 시스템 설정을 확인하세요. 읽기 전용 모드를 유지합니다."
+    }
+
+    private func failPendingApproval(
+        _ message: String,
+        model: AppModel
+    ) async {
+        await failControl(
+            AuthorizationLauncherError.agentFailed(message),
+            model: model
+        )
+        model.pendingPrivilegedMode = nil
+        model.isPrivilegedApprovalPresented = false
+    }
+
+    private func handleConnectionFailure() async {
+        guard let model else {
+            return
+        }
+        await failControl(
+            XPCControlClientError.invalidated,
+            model: model
+        )
     }
 
     private func installLifecycleObservers() {

@@ -1,5 +1,7 @@
 import Foundation
+import FanControllerCore
 import ServiceManagement
+import SMCKit
 import XCTest
 
 @testable import FanControlIPC
@@ -7,6 +9,146 @@ import XCTest
 
 @MainActor
 final class PrivilegedServiceManagerTests: XCTestCase {
+    func testSelectingCustomModeWithoutEnabledServiceDefersRuntimeRequest() {
+        let model = AppModel()
+        var requestedModes: [ControlMode] = []
+        model.modeRequestHandler = { requestedModes.append($0) }
+
+        model.selectMode(.curve)
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.pendingPrivilegedMode, .curve)
+        XCTAssertTrue(model.isPrivilegedApprovalPresented)
+        XCTAssertEqual(model.controlStatus, .authorizing)
+        XCTAssertTrue(requestedModes.isEmpty)
+    }
+
+    func testCancellingApprovalReturnsToSystemWithoutRuntimeRequest() {
+        let model = AppModel()
+        var requestedModes: [ControlMode] = []
+        model.modeRequestHandler = { requestedModes.append($0) }
+        model.selectMode(.manual)
+
+        model.cancelPrivilegedApproval()
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertFalse(model.isPrivilegedApprovalPresented)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertTrue(requestedModes.isEmpty)
+    }
+
+    func testEnabledServiceAppliesCustomSelectionWithoutApproval() {
+        let model = AppModel()
+        var requestedModes: [ControlMode] = []
+        model.modeRequestHandler = { requestedModes.append($0) }
+        model.privilegedServiceState = .enabled
+
+        model.selectMode(.manual)
+
+        XCTAssertEqual(model.settings.mode, .manual)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertFalse(model.isPrivilegedApprovalPresented)
+        XCTAssertEqual(requestedModes, [.manual])
+    }
+
+    func testExplicitConfirmationRegistersVerifiesStatusAndAppliesPendingMode()
+        async
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let status = AgentStatus(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            manualFanIndices: []
+        )
+        let service = FakeServiceRegistration(status: .notRegistered)
+        service.onRegister = { service.status = .enabled }
+        let manager = makeManager(
+            service: service,
+            connectionFactory: {
+                FakeXPCConnection(behavior: .reply(.status(status)))
+            }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.curve)
+
+        XCTAssertEqual(service.registerCallCount, 0)
+
+        await model.confirmPrivilegedApproval()
+
+        XCTAssertEqual(service.registerCallCount, 1)
+        XCTAssertEqual(model.privilegedServiceState, .enabled)
+        XCTAssertEqual(model.settings.mode, .curve)
+        XCTAssertEqual(model.controlStatus, .curve)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertFalse(model.isPrivilegedApprovalPresented)
+        XCTAssertTrue(model.ipcConnected)
+    }
+
+    func testApprovalRequiredKeepsPendingModeAndOffersSystemSettings() async {
+        let service = FakeServiceRegistration(status: .notRegistered)
+        service.onRegister = { service.status = .requiresApproval }
+        var openSettingsCount = 0
+        let manager = makeManager(
+            service: service,
+            approvalSettingsOpener: {
+                openSettingsCount += 1
+            }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.manual)
+
+        await model.confirmPrivilegedApproval()
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.pendingPrivilegedMode, .manual)
+        XCTAssertTrue(model.isPrivilegedApprovalPresented)
+        XCTAssertEqual(model.privilegedServiceState, .requiresApproval)
+        XCTAssertTrue(
+            model.diagnosticMessage?.contains("시스템 설정") == true
+        )
+
+        model.openPrivilegedApprovalSettings()
+        XCTAssertEqual(openSettingsCount, 1)
+    }
+
+    func testRegistrationFailureReturnsSafelyToSystemWithActionableStatus()
+        async
+    {
+        let service = FakeServiceRegistration(status: .notRegistered)
+        service.registerError = TestFailure.expected
+        let manager = makeManager(service: service)
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.curve)
+
+        await model.confirmPrivilegedApproval()
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .failed)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertFalse(model.isPrivilegedApprovalPresented)
+        XCTAssertTrue(
+            model.diagnosticMessage?.contains("읽기 전용") == true
+        )
+        XCTAssertFalse(model.ipcConnected)
+    }
+
     func testRefreshStatusMapsEveryKnownServiceStatus() {
         let cases: [(SMAppService.Status, PrivilegedServiceState)] = [
             (.notRegistered, .notRegistered),

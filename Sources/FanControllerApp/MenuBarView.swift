@@ -37,6 +37,28 @@ struct MenuBarView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .alert(
+            "팬 제어 권한이 필요합니다",
+            isPresented: $model.isPrivilegedApprovalPresented
+        ) {
+            Button("계속") {
+                Task {
+                    await model.confirmPrivilegedApproval()
+                }
+            }
+            if model.privilegedServiceState == .requiresApproval {
+                Button("시스템 설정 열기") {
+                    model.openPrivilegedApprovalSettings()
+                }
+            }
+            Button("취소", role: .cancel) {
+                model.cancelPrivilegedApproval()
+            }
+        } message: {
+            Text(
+                "PenguinFan은 실제 팬 속도를 변경할 때만 macOS의 실험적 권한 서비스를 사용합니다."
+            )
+        }
     }
 
     private var header: some View {
