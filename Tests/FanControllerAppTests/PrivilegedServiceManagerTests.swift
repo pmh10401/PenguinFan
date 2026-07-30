@@ -970,6 +970,27 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .enabled)
     }
 
+    func testRefreshEnabledRegistrationUnregistersBeforeRegistering() async {
+        let events = EventRecorder()
+        let service = FakeServiceRegistration(status: .enabled)
+        service.onUnregister = {
+            events.append("unregister")
+            service.status = .notRegistered
+        }
+        service.onRegister = {
+            events.append("register")
+            service.status = .enabled
+        }
+        let manager = makeManager(service: service)
+
+        await manager.refreshEnabledRegistration()
+
+        XCTAssertEqual(events.values, ["unregister", "register"])
+        XCTAssertEqual(service.unregisterCallCount, 1)
+        XCTAssertEqual(service.registerCallCount, 1)
+        XCTAssertEqual(manager.state, .enabled)
+    }
+
     func testRegisterDoesNotMutateReadOnlyServiceStatuses() {
         let cases: [(SMAppService.Status, PrivilegedServiceState)] = [
             (.enabled, .enabled),

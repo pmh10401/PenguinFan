@@ -181,7 +181,7 @@ final class AgentServerTests: XCTestCase {
                 path: "/Applications",
                 metadata: secureFilesystemMetadata(
                     for: "/Applications",
-                    mode: S_IFDIR | 0o775
+                    mode: S_IFDIR | 0o777
                 )
             ),
             (
@@ -222,6 +222,25 @@ final class AgentServerTests: XCTestCase {
                 ).accepts(connection)
             )
         }
+    }
+
+    func testXPCClientValidatorAllowsStandardApplicationsPermissions() {
+        let validator = makeValidator(
+            filesystemMetadata: { path in
+                if path == "/Applications" {
+                    return FilesystemSecurityMetadata(
+                        ownerUID: 0,
+                        mode: S_IFDIR | 0o775,
+                        kind: .directory,
+                        hasUnsafeExtendedACL: false
+                    )
+                }
+                return AgentServerTests
+                    .defaultSecureFilesystemMetadata(for: path)
+            }
+        )
+
+        XCTAssertTrue(validator.accepts(testConnection()))
     }
 
     func testXPCClientValidatorRejectsInspectionErrors() {

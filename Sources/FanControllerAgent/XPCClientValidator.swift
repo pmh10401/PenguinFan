@@ -104,10 +104,26 @@ public final class XPCClientValidator: @unchecked Sendable {
                 guard let guestCode else {
                     throw ValidationError.processCodeUnavailable
                 }
+                let requirementSource =
+                    "anchor apple generic and identifier " +
+                    "\"\(XPCClientValidator.requiredSigningIdentifier)\" " +
+                    "and certificate leaf[subject.OU] = " +
+                    "\"\(XPCClientValidator.requiredTeamIdentifier)\""
+                var requirement: SecRequirement?
+                let requirementStatus = SecRequirementCreateWithString(
+                    requirementSource as CFString,
+                    [],
+                    &requirement
+                )
+                guard requirementStatus == errSecSuccess,
+                      let requirement
+                else {
+                    throw ValidationError.processCodeRequirementUnavailable
+                }
                 guard SecCodeCheckValidity(
                     guestCode,
                     [],
-                    nil
+                    requirement
                 ) == errSecSuccess else {
                     throw ValidationError.invalidProcessCode
                 }
@@ -144,9 +160,7 @@ public final class XPCClientValidator: @unchecked Sendable {
                 return (
                     executablePath: executableURL.path,
                     signingIdentifier: signingIdentifier,
-                    teamIdentifier: dictionary[
-                        kSecCodeInfoTeamIdentifier as String
-                    ] as? String
+                    teamIdentifier: XPCClientValidator.requiredTeamIdentifier
                 )
             },
             filesystemMetadata: { path in
@@ -223,8 +237,12 @@ public final class XPCClientValidator: @unchecked Sendable {
                 path == Self.requiredExecutablePath
                     ? .regularFile
                     : .directory
+            let unsafeWriteMask: mode_t =
+                path == "/Applications"
+                    ? S_IWOTH
+                    : (S_IWGRP | S_IWOTH)
             guard metadata.ownerUID == 0,
-                  metadata.mode & (S_IWGRP | S_IWOTH) == 0,
+                  metadata.mode & unsafeWriteMask == 0,
                   metadata.kind == expectedKind,
                   !metadata.hasUnsafeExtendedACL
             else {
@@ -270,6 +288,9 @@ public final class XPCClientValidator: @unchecked Sendable {
         _ path: String
     ) throws -> Bool {
         guard let acl = acl_get_file(path, ACL_TYPE_EXTENDED) else {
+            if errno == ENOENT {
+                return false
+            }
             throw ValidationError.aclUnavailable
         }
         defer {
@@ -339,6 +360,7 @@ private enum ValidationError: Error {
     case securityIdentityUnavailable
     case consoleUserUnavailable
     case processCodeUnavailable
+    case processCodeRequirementUnavailable
     case invalidProcessCode
     case processCodeMetadataUnavailable
     case installationPermissionsInvalid

@@ -529,6 +529,19 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     -c "Print :MachServices:com.local.PenguinFan.experimental.agent" \
     "$DAEMON_PLIST")" == "true" ]] \
     || { echo "LaunchDaemon MachServices verification failed." >&2; exit 1; }
+  [[ "$(/usr/libexec/PlistBuddy \
+    -c "Print :SpawnConstraint:signing-identifier" \
+    "$DAEMON_PLIST")" == \
+    "com.local.PenguinFan.experimental.agent" ]] \
+    || { echo "SpawnConstraint signing identifier failed." >&2; exit 1; }
+  [[ "$(/usr/libexec/PlistBuddy \
+    -c "Print :SpawnConstraint:team-identifier" \
+    "$DAEMON_PLIST")" == "$EXPECTED_TEAM_IDENTIFIER" ]] \
+    || { echo "SpawnConstraint TeamIdentifier failed." >&2; exit 1; }
+  [[ "$(/usr/libexec/PlistBuddy \
+    -c "Print :SpawnConstraint:validation-category" \
+    "$DAEMON_PLIST")" == "3" ]] \
+    || { echo "SpawnConstraint validation category failed." >&2; exit 1; }
 
   [[ -x "$MAIN_EXECUTABLE" ]] \
     || { echo "Experimental main executable is missing." >&2; exit 1; }
@@ -566,6 +579,11 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   verify_identity_signature "$HELPER_EXECUTABLE"
   verify_identity_signature "$MAIN_EXECUTABLE"
   verify_identity_signature "$APP"
+  HELPER_SIGNATURE="$(/usr/bin/codesign -dvvv \
+    "$HELPER_EXECUTABLE" 2>&1)"
+  [[ "$HELPER_SIGNATURE" == \
+    *"Identifier=com.local.PenguinFan.experimental.agent"* ]] \
+    || { echo "Signed helper identifier verification failed." >&2; exit 1; }
   [[ "$MAIN_SIGNATURE" == \
     *"Identifier=com.local.PenguinFan.experimental"* ]] \
     || { echo "Signed main identifier verification failed." >&2; exit 1; }

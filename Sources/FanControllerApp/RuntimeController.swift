@@ -5,6 +5,9 @@ import SMCKit
 
 @MainActor
 final class RuntimeController: ObservableObject {
+    private static let privilegedServiceBuildKey =
+        "PenguinFan.Experimental.PrivilegedServiceBuild"
+
     private let launcher = AuthorizationLauncher()
     private let injectedServiceManager: PrivilegedServiceManager?
     private let legacyFallbackEnabled: () -> Bool
@@ -51,6 +54,7 @@ final class RuntimeController: ObservableObject {
         self.model = model
         serviceManager.refreshStatus()
         model.privilegedServiceState = serviceManager.state
+        refreshPrivilegedServiceAfterAppUpdateIfNeeded(model: model)
         model.modeRequestGenerationHandler = {
             [weak self, weak model] mode, generation in
             guard let self, let model else {
@@ -89,6 +93,37 @@ final class RuntimeController: ObservableObject {
         installLifecycleObservers()
         if startSensors {
             startReadOnlySensors(model: model)
+        }
+    }
+
+    private func refreshPrivilegedServiceAfterAppUpdateIfNeeded(
+        model: AppModel
+    ) {
+        guard injectedServiceManager == nil,
+              serviceManager.state == .enabled,
+              let build = Bundle.main.object(
+                  forInfoDictionaryKey: "CFBundleVersion"
+              ) as? String,
+              UserDefaults.standard.string(
+                  forKey: Self.privilegedServiceBuildKey
+              ) != build
+        else {
+            return
+        }
+
+        model.privilegedServiceState = .registering
+        Task { [weak self, weak model] in
+            guard let self, let model else {
+                return
+            }
+            await self.serviceManager.refreshEnabledRegistration()
+            model.privilegedServiceState = self.serviceManager.state
+            if self.serviceManager.state == .enabled {
+                UserDefaults.standard.set(
+                    build,
+                    forKey: Self.privilegedServiceBuildKey
+                )
+            }
         }
     }
 
@@ -242,6 +277,14 @@ final class RuntimeController: ObservableObject {
 
         switch serviceManager.state {
         case .enabled:
+            if let build = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String {
+                UserDefaults.standard.set(
+                    build,
+                    forKey: Self.privilegedServiceBuildKey
+                )
+            }
             guard let mode = model.pendingPrivilegedMode else {
                 return
             }

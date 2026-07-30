@@ -510,8 +510,14 @@ else
   SIGNING_ARGUMENTS=(--force --sign -)
 fi
 
-/usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
-  "$CONTENTS/Helpers/FanControllerAgent"
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  /usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
+    --identifier "$HELPER_LABEL" \
+    "$CONTENTS/Helpers/FanControllerAgent"
+else
+  /usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
+    "$CONTENTS/Helpers/FanControllerAgent"
+fi
 /usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
   "$CONTENTS/Helpers/FanDiagnostics"
 /usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
@@ -554,6 +560,11 @@ for signed_item in \
       echo "Unexpected signing Authority for $signed_item" >&2
       exit 1
     fi
+    if [[ "$signed_item" == "$CONTENTS/Helpers/FanControllerAgent" ]] \
+      && [[ "$SIGNATURE_INFO" != *"Identifier=$HELPER_LABEL"* ]]; then
+      echo "Unexpected signing identifier for $signed_item" >&2
+      exit 1
+    fi
     if [[ "$SIGNATURE_INFO" != *"(runtime)"* ]]; then
       echo "Hardened runtime is missing for $signed_item" >&2
       exit 1
@@ -586,6 +597,18 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     -c "Print :MachServices:$HELPER_LABEL" \
     "$EMBEDDED_PLIST")" != "true" ]]; then
     echo "LaunchDaemon MachServices verification failed." >&2
+    exit 1
+  fi
+  if [[ "$(/usr/libexec/PlistBuddy \
+    -c "Print :SpawnConstraint:signing-identifier" \
+    "$EMBEDDED_PLIST")" != "$HELPER_LABEL" ]] \
+    || [[ "$(/usr/libexec/PlistBuddy \
+      -c "Print :SpawnConstraint:team-identifier" \
+      "$EMBEDDED_PLIST")" != "$EXPECTED_TEAM_IDENTIFIER" ]] \
+    || [[ "$(/usr/libexec/PlistBuddy \
+      -c "Print :SpawnConstraint:validation-category" \
+      "$EMBEDDED_PLIST")" != "3" ]]; then
+    echo "LaunchDaemon SpawnConstraint verification failed." >&2
     exit 1
   fi
 fi

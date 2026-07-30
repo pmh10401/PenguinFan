@@ -11,6 +11,15 @@
     <key>com.local.PenguinFan.experimental.agent</key>
     <true/>
   </dict>
+  <key>SpawnConstraint</key>
+  <dict>
+    <key>signing-identifier</key>
+    <string>com.local.PenguinFan.experimental.agent</string>
+    <key>team-identifier</key>
+    <string>UUUQNVQ67B</string>
+    <key>validation-category</key>
+    <integer>3</integer>
+  </dict>
   <key>ProcessType</key>
   <string>Interactive</string>
 </dict>
