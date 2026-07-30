@@ -42,6 +42,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"
   LOCK_OWNED=0
   PUBLICATION_STATE_MANAGED=0
+  PRIOR_PACKAGE_KNOWN_GOOD=0
+  NEW_PACKAGE_KNOWN_GOOD=0
   PUBLISHED=0
   STAGING_DIR=""
   PRIOR_VALID_PACKAGE=""
@@ -62,16 +64,32 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
       && [[ "$(/bin/cat "$LOCK_FILE" 2>/dev/null || true)" == "$$" ]]; then
       if [[ "$PUBLICATION_STATE_MANAGED" -eq 1 ]] \
         && [[ "$PUBLISHED" -ne 1 ]]; then
-        /bin/rm -f "$FINAL_PACKAGE"
-        if [[ -n "$PRIOR_VALID_PACKAGE" ]] \
+        if [[ "$PRIOR_PACKAGE_KNOWN_GOOD" -eq 1 ]] \
           && [[ -f "$PRIOR_VALID_PACKAGE" ]]; then
+          /bin/rm -f "$FINAL_PACKAGE"
           /bin/mv "$PRIOR_VALID_PACKAGE" "$FINAL_PACKAGE"
+        elif [[ "$PRIOR_PACKAGE_KNOWN_GOOD" -eq 1 ]] \
+          && [[ -f "$FINAL_PACKAGE" ]]; then
+          # Signal arrived before the atomic backup move. The known-good
+          # package is already at the final path and must remain untouched.
+          :
+        elif [[ "$NEW_PACKAGE_KNOWN_GOOD" -eq 1 ]] \
+          && [[ -f "$FINAL_PACKAGE" ]]; then
+          # Signal arrived after publishing a fully validated new package but
+          # before the success marker. Preserve that known-good package.
+          :
+        else
+          /bin/rm -f "$FINAL_PACKAGE"
         fi
       fi
-      /bin/rm -f "$LOCK_FILE"
-    fi
 
-    if [[ -n "$STAGING_DIR" ]]; then
+      if [[ -n "$STAGING_DIR" ]]; then
+        /bin/rm -rf "$STAGING_DIR"
+      fi
+      /bin/rm -f "$LOCK_FILE"
+    elif [[ -n "$STAGING_DIR" ]]; then
+      # Unique staging is process-owned and safe to remove without touching
+      # shared publication state.
       /bin/rm -rf "$STAGING_DIR"
     fi
     exit "$result"
@@ -103,15 +121,27 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   if [[ -f "$FINAL_PACKAGE" ]]; then
     if "$ROOT/script/validate_experimental_package.sh" \
       "$FINAL_PACKAGE" >/dev/null; then
+      PRIOR_PACKAGE_KNOWN_GOOD=1
+      PUBLICATION_STATE_MANAGED=1
+
+      if [[ "${PENGUINFAN_TASK6_SIGNAL_BEFORE_BACKUP_MOVE:-0}" == "1" ]]; then
+        /bin/kill -TERM "$$"
+      fi
+
       /bin/mv "$FINAL_PACKAGE" "$PRIOR_VALID_PACKAGE"
+
+      if [[ "${PENGUINFAN_TASK6_SIGNAL_AFTER_BACKUP_MOVE:-0}" == "1" ]]; then
+        /bin/kill -TERM "$$"
+      fi
     else
+      PUBLICATION_STATE_MANAGED=1
       /bin/rm -f "$FINAL_PACKAGE"
       PRIOR_VALID_PACKAGE=""
     fi
   else
+    PUBLICATION_STATE_MANAGED=1
     PRIOR_VALID_PACKAGE=""
   fi
-  PUBLICATION_STATE_MANAGED=1
 
   FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
     "$ROOT/script/build_and_run.sh" \
@@ -264,6 +294,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     || { echo "Installer payload is missing the LaunchDaemon plist." >&2; exit 1; }
 
   "$ROOT/script/validate_experimental_package.sh" "$PACKAGE"
+  NEW_PACKAGE_KNOWN_GOOD=1
 
   if [[ "${PENGUINFAN_TASK6_FAIL_BEFORE_PUBLISH:-0}" == "1" ]]; then
     echo "Injected Task 6 failure before package publication." >&2

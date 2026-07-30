@@ -189,3 +189,58 @@ Regenerated artifact:
 `/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
 
 SHA-256: `889cc29e3eaeb794ef074d8fde9640d4f094765093757da7ebc8142306412614`
+
+## Fix round 3/5: signal-safe backup transition
+
+### RED evidence
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Before signal-transition handling, the pre-backup injection was ignored, the
+build continued to publication, and the test failed with:
+
+```text
+FAIL: pre-backup signal injection unexpectedly succeeded
+ROUND3_RED_EXIT=1
+```
+
+### Final focused signal, concurrency, and package run
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Result: exit 0 with:
+
+```text
+Timed out waiting 1 seconds for package publication lock.
+Injected Task 6 failure before package publication.
+Task 6 transactional concurrency and artifact checks passed.
+```
+
+The focused run retained all round 2 concurrency and artifact checks and added
+deterministic TERM injection at both backup transition boundaries:
+
+- immediately before backup move: cleanup observed the known-good final in
+  place, preserved it byte-for-byte, cleaned unique staging, then released lock
+- immediately after backup move: cleanup observed the real backup file,
+  restored it to final byte-for-byte, cleaned staging, then released lock
+- both paths returned failure, preserved the baseline SHA-256, left no lock or
+  staging directory, and passed full package revalidation afterward
+
+Cleanup ownership is established before the move transition. Trap logic now
+uses both known-good state and actual backup/final existence. The publication
+lock remains held through restoration and staging cleanup and is removed last.
+No install or launch was performed.
+
+Regenerated artifact:
+
+`/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
+
+SHA-256: `62a1d9b8cdd5a57cdf32328ee44dabe9ed14839eac004b21902faa3b2ee73076`

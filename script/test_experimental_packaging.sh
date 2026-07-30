@@ -209,6 +209,36 @@ fi
 verify_package "$FINAL_PACKAGE"
 assert_no_staging_directories
 
+# TERM immediately before and immediately after the valid-final backup move
+# must preserve the exact previously published package and release all state.
+SIGNAL_BASELINE_SHA="$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
+  | /usr/bin/awk '{print $1}')"
+
+if PENGUINFAN_TASK6_SIGNAL_BEFORE_BACKUP_MOVE=1 \
+  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  fail "pre-backup signal injection unexpectedly succeeded"
+fi
+[[ -f "$FINAL_PACKAGE" ]] \
+  || fail "pre-backup signal removed the valid final package"
+[[ "$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
+  | /usr/bin/awk '{print $1}')" == "$SIGNAL_BASELINE_SHA" ]] \
+  || fail "pre-backup signal changed the valid final package"
+[[ ! -e "$LOCK_FILE" ]] || fail "lock remains after pre-backup signal"
+assert_no_staging_directories
+
+if PENGUINFAN_TASK6_SIGNAL_AFTER_BACKUP_MOVE=1 \
+  "$ROOT/script/build_installer.sh" --experimental-helper; then
+  fail "post-backup signal injection unexpectedly succeeded"
+fi
+[[ -f "$FINAL_PACKAGE" ]] \
+  || fail "post-backup signal removed the valid final package"
+[[ "$(/usr/bin/shasum -a 256 "$FINAL_PACKAGE" \
+  | /usr/bin/awk '{print $1}')" == "$SIGNAL_BASELINE_SHA" ]] \
+  || fail "post-backup signal changed the valid final package"
+[[ ! -e "$LOCK_FILE" ]] || fail "lock remains after post-backup signal"
+assert_no_staging_directories
+verify_package "$FINAL_PACKAGE"
+
 # Two successful simultaneous attempts must serialize. D remains waiting while
 # C owns the lock; afterward the final package must be one complete artifact.
 C_LOG="$ROOT/.build/task6-concurrency-c.log"
