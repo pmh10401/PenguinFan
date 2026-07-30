@@ -17,6 +17,16 @@ struct FilesystemSecurityMetadata: Sendable {
     let hasUnsafeExtendedACL: Bool
 }
 
+enum LiveProcessCodeInspectionError: Error {
+    case unavailableForAdHoc
+}
+
+struct StaticCodeIdentity: Sendable {
+    let signingIdentifier: String
+    let teamIdentifier: String?
+    let isAdHoc: Bool
+}
+
 public final class XPCClientValidator: @unchecked Sendable {
     static let requiredBundlePath =
         "/Applications/PenguinFan Experimental.app"
@@ -52,9 +62,14 @@ public final class XPCClientValidator: @unchecked Sendable {
     private let consoleUserUID: @Sendable () throws -> uid_t
     private let processCodeIdentity:
         @Sendable (pid_t) throws -> ProcessCodeIdentity
+    private let processExecutablePath:
+        @Sendable (pid_t) throws -> String
+    private let canonicalPath: @Sendable (String) throws -> String
+    private let staticCodeIdentity:
+        @Sendable (String) throws -> StaticCodeIdentity
     private let filesystemMetadata:
         @Sendable (String) throws -> FilesystemSecurityMetadata
-    private let logFailure: @Sendable (String) -> Void
+    private let logEvent: @Sendable (String) -> Void
 
     public convenience init() {
         self.init(
@@ -96,9 +111,14 @@ public final class XPCClientValidator: @unchecked Sendable {
                     [],
                     &guestCode
                 )
-                guard guestStatus == errSecSuccess,
-                      let guestCode
-                else {
+                guard guestStatus == errSecSuccess else {
+                    if guestStatus == errSecCSNoSuchCode {
+                        throw LiveProcessCodeInspectionError
+                            .unavailableForAdHoc
+                    }
+                    throw ValidationError.processCodeUnavailable
+                }
+                guard let guestCode else {
                     throw ValidationError.processCodeUnavailable
                 }
                 guard SecCodeCheckValidity(
@@ -143,12 +163,23 @@ public final class XPCClientValidator: @unchecked Sendable {
                     signingIdentifier: signingIdentifier
                 )
             },
+            processExecutablePath: { processID in
+                try XPCClientValidator.inspectProcessExecutablePath(
+                    processID
+                )
+            },
+            canonicalPath: { path in
+                try XPCClientValidator.resolveCanonicalPath(path)
+            },
+            staticCodeIdentity: { path in
+                try XPCClientValidator.inspectStaticCode(at: path)
+            },
             filesystemMetadata: { path in
                 try XPCClientValidator.inspectFilesystemObject(path)
             },
-            logFailure: { reason in
-                XPCClientValidator.logger.error(
-                    "Rejected XPC client: \(reason, privacy: .public)"
+            logFailure: { event in
+                XPCClientValidator.logger.notice(
+                    "XPC validation \(event, privacy: .public)"
                 )
             }
         )
@@ -160,6 +191,20 @@ public final class XPCClientValidator: @unchecked Sendable {
         consoleUserUID: @escaping @Sendable () throws -> uid_t,
         processCodeIdentity: @escaping @Sendable
             (pid_t) throws -> ProcessCodeIdentity,
+        processExecutablePath: @escaping @Sendable
+            (pid_t) throws -> String = { processID in
+                try XPCClientValidator.inspectProcessExecutablePath(
+                    processID
+                )
+            },
+        canonicalPath: @escaping @Sendable
+            (String) throws -> String = { path in
+                try XPCClientValidator.resolveCanonicalPath(path)
+            },
+        staticCodeIdentity: @escaping @Sendable
+            (String) throws -> StaticCodeIdentity = { path in
+                try XPCClientValidator.inspectStaticCode(at: path)
+            },
         filesystemMetadata: @escaping @Sendable
             (String) throws -> FilesystemSecurityMetadata,
         logFailure: @escaping @Sendable (String) -> Void
@@ -167,8 +212,11 @@ public final class XPCClientValidator: @unchecked Sendable {
         self.securityIdentity = securityIdentity
         self.consoleUserUID = consoleUserUID
         self.processCodeIdentity = processCodeIdentity
+        self.processExecutablePath = processExecutablePath
+        self.canonicalPath = canonicalPath
+        self.staticCodeIdentity = staticCodeIdentity
         self.filesystemMetadata = filesystemMetadata
-        self.logFailure = logFailure
+        logEvent = logFailure
     }
 
     public func accepts(_ connection: NSXPCConnection) -> Bool {
@@ -176,41 +224,198 @@ public final class XPCClientValidator: @unchecked Sendable {
             let identity = try securityIdentity(connection)
             let currentConsoleUserID = try consoleUserUID()
             guard identity.effectiveUID == currentConsoleUserID else {
-                logFailure("effective user mismatch")
+                reject(route: "primary", reason: "effective_uid_mismatch")
                 return false
             }
 
-            let codeIdentity = try processCodeIdentity(identity.processID)
+            let codeIdentity: ProcessCodeIdentity
+            do {
+                codeIdentity = try processCodeIdentity(identity.processID)
+            } catch LiveProcessCodeInspectionError.unavailableForAdHoc {
+                return acceptsAdHocFallback(processID: identity.processID)
+            } catch {
+                reject(route: "primary", reason: "live_code_invalid")
+                return false
+            }
             guard codeIdentity.executablePath == Self.requiredExecutablePath else {
-                logFailure("executable path mismatch")
+                reject(route: "primary", reason: "executable_path_mismatch")
                 return false
             }
             guard codeIdentity.signingIdentifier ==
                     Self.requiredSigningIdentifier
             else {
-                logFailure("signing identifier mismatch")
+                reject(route: "primary", reason: "identifier_mismatch")
                 return false
             }
-            for path in Self.requiredFilesystemPaths {
-                let metadata = try filesystemMetadata(path)
-                let expectedKind: FilesystemObjectKind =
-                    path == Self.requiredExecutablePath
-                        ? .regularFile
-                        : .directory
-                guard metadata.ownerUID == 0,
-                      metadata.mode & (S_IWGRP | S_IWOTH) == 0,
-                      metadata.kind == expectedKind,
-                      !metadata.hasUnsafeExtendedACL
-                else {
-                    logFailure("installation permissions invalid")
-                    return false
-                }
-            }
+            try validateInstallationFilesystem()
+            accept(route: "primary")
             return true
         } catch {
-            logFailure("client inspection failed")
+            reject(route: "primary", reason: "inspection_failed")
             return false
         }
+    }
+
+    private func acceptsAdHocFallback(processID: pid_t) -> Bool {
+        do {
+            let firstPath = try processExecutablePath(processID)
+            guard firstPath == Self.requiredExecutablePath else {
+                reject(route: "fallback", reason: "pid_path_mismatch")
+                return false
+            }
+
+            let requiredCanonical = try canonicalPath(
+                Self.requiredExecutablePath
+            )
+            guard requiredCanonical == Self.requiredExecutablePath,
+                  try canonicalPath(firstPath) == requiredCanonical
+            else {
+                reject(route: "fallback", reason: "canonical_path_mismatch")
+                return false
+            }
+
+            let staticIdentity = try staticCodeIdentity(requiredCanonical)
+            guard staticIdentity.teamIdentifier?.isEmpty != false else {
+                reject(route: "fallback", reason: "team_identifier_present")
+                return false
+            }
+            guard staticIdentity.isAdHoc else {
+                reject(route: "fallback", reason: "not_ad_hoc")
+                return false
+            }
+            guard staticIdentity.signingIdentifier ==
+                    Self.requiredSigningIdentifier
+            else {
+                reject(route: "fallback", reason: "identifier_mismatch")
+                return false
+            }
+
+            try validateInstallationFilesystem()
+
+            let secondPath = try processExecutablePath(processID)
+            guard secondPath == firstPath,
+                  try canonicalPath(secondPath) == requiredCanonical
+            else {
+                reject(route: "fallback", reason: "pid_changed_or_exited")
+                return false
+            }
+            accept(route: "fallback")
+            return true
+        } catch {
+            reject(route: "fallback", reason: "inspection_failed")
+            return false
+        }
+    }
+
+    private func validateInstallationFilesystem() throws {
+        for path in Self.requiredFilesystemPaths {
+            let metadata = try filesystemMetadata(path)
+            let expectedKind: FilesystemObjectKind =
+                path == Self.requiredExecutablePath
+                    ? .regularFile
+                    : .directory
+            guard metadata.ownerUID == 0,
+                  metadata.mode & (S_IWGRP | S_IWOTH) == 0,
+                  metadata.kind == expectedKind,
+                  !metadata.hasUnsafeExtendedACL
+            else {
+                throw ValidationError.installationPermissionsInvalid
+            }
+        }
+    }
+
+    private func accept(route: String) {
+        logEvent("route=\(route) outcome=accepted reason=validated")
+    }
+
+    private func reject(route: String, reason: String) {
+        logEvent("route=\(route) outcome=rejected reason=\(reason)")
+    }
+
+    private static func inspectProcessExecutablePath(
+        _ processID: pid_t
+    ) throws -> String {
+        var buffer = [CChar](
+            repeating: 0,
+            count: 4 * Int(MAXPATHLEN)
+        )
+        let length = proc_pidpath(
+            processID,
+            &buffer,
+            UInt32(buffer.count)
+        )
+        let pathLength = Int(length)
+        guard length > 0,
+              pathLength < buffer.count - 1,
+              buffer[pathLength] == 0,
+              let path = String(
+                  bytes: buffer[..<pathLength].map {
+                      UInt8(bitPattern: $0)
+                  },
+                  encoding: .utf8
+              ),
+              !path.isEmpty
+        else {
+            throw ValidationError.processPathUnavailable
+        }
+        return path
+    }
+
+    private static func resolveCanonicalPath(
+        _ path: String
+    ) throws -> String {
+        guard let resolved = realpath(path, nil) else {
+            throw ValidationError.canonicalPathUnavailable
+        }
+        defer {
+            free(resolved)
+        }
+        return String(cString: resolved)
+    }
+
+    private static func inspectStaticCode(
+        at path: String
+    ) throws -> StaticCodeIdentity {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(
+            URL(fileURLWithPath: path) as CFURL,
+            [],
+            &staticCode
+        ) == errSecSuccess, let staticCode else {
+            throw ValidationError.staticCodeUnavailable
+        }
+        guard SecStaticCodeCheckValidity(
+            staticCode,
+            [],
+            nil
+        ) == errSecSuccess else {
+            throw ValidationError.invalidStaticCode
+        }
+
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            [],
+            &information
+        ) == errSecSuccess,
+              let dictionary = information as? [String: Any],
+              let signingIdentifier = dictionary[
+                kSecCodeInfoIdentifier as String
+              ] as? String,
+              let flags = dictionary[
+                kSecCodeInfoFlags as String
+              ] as? NSNumber
+        else {
+            throw ValidationError.staticCodeMetadataUnavailable
+        }
+        return StaticCodeIdentity(
+            signingIdentifier: signingIdentifier,
+            teamIdentifier: dictionary[
+                kSecCodeInfoTeamIdentifier as String
+            ] as? String,
+            isAdHoc: flags.uint32Value
+                & 0x0002 != 0
+        )
     }
 
     private static func inspectFilesystemObject(
@@ -313,6 +518,12 @@ private enum ValidationError: Error {
     case processCodeUnavailable
     case invalidProcessCode
     case processCodeMetadataUnavailable
+    case processPathUnavailable
+    case canonicalPathUnavailable
+    case staticCodeUnavailable
+    case invalidStaticCode
+    case staticCodeMetadataUnavailable
+    case installationPermissionsInvalid
     case filesystemMetadataUnavailable
     case aclUnavailable
 }

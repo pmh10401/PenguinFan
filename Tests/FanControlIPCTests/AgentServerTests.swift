@@ -228,6 +228,121 @@ final class AgentServerTests: XCTestCase {
         )
     }
 
+    func testAdHocFallbackAcceptsOnlyFixedSecureClient() {
+        let events = LockedStrings()
+        let validator = makeAdHocFallbackValidator(log: events.append)
+
+        XCTAssertTrue(validator.accepts(testConnection()))
+        XCTAssertEqual(
+            events.values.last,
+            "route=fallback outcome=accepted reason=validated"
+        )
+    }
+
+    func testAdHocFallbackRejectsPIDPathMismatch() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(
+                processPath: "/Applications/Other.app/Contents/MacOS/Other"
+            ).accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsCanonicalOrSymlinkMismatch() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(
+                canonicalPath: { _ in "/private/tmp/FanControllerApp" }
+            ).accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsPIDChangeOrTermination() {
+        let paths = LockedPathSequence(
+            [
+                XPCClientValidator.requiredExecutablePath,
+                "/Applications/Other.app/Contents/MacOS/Other",
+            ]
+        )
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(
+                processExecutablePath: paths.next
+            ).accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsMutableAncestorAndUnsafeACL() {
+        for unsafePath in ["/Applications", XPCClientValidator.requiredBundlePath] {
+            XCTAssertFalse(
+                makeAdHocFallbackValidator(
+                    filesystemMetadata: { path in
+                        if path == unsafePath {
+                            return AgentServerTests
+                                .defaultSecureFilesystemMetadata(
+                                    for: path,
+                                    mode: S_IFDIR | (
+                                        path == "/Applications"
+                                            ? 0o775
+                                            : 0o755
+                                    ),
+                                    hasUnsafeExtendedACL:
+                                        path == XPCClientValidator
+                                            .requiredBundlePath
+                                )
+                        }
+                        return AgentServerTests
+                            .defaultSecureFilesystemMetadata(for: path)
+                    }
+                ).accepts(testConnection())
+            )
+        }
+    }
+
+    func testAdHocFallbackRejectsWrongEffectiveUID() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(effectiveUID: 502)
+                .accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsWrongIdentifier() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(signingIdentifier: "com.local.Other")
+                .accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsInvalidStaticCode() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(
+                staticCodeIdentity: { _ in
+                    throw ValidationTestError.failed
+                }
+            ).accepts(testConnection())
+        )
+    }
+
+    func testAdHocFallbackRejectsRealTeamIdentifier() {
+        XCTAssertFalse(
+            makeAdHocFallbackValidator(teamIdentifier: "REALTEAM12")
+                .accepts(testConnection())
+        )
+    }
+
+    func testInvalidLiveCodeNeverEntersAdHocFallback() {
+        let pathCalls = LockedCounter()
+        let validator = makeAdHocFallbackValidator(
+            processCodeIdentity: { _ in
+                throw ValidationTestError.failed
+            },
+            processExecutablePath: { _ in
+                pathCalls.increment()
+                return XPCClientValidator.requiredExecutablePath
+            }
+        )
+
+        XCTAssertFalse(validator.accepts(testConnection()))
+        XCTAssertEqual(pathCalls.value, 0)
+    }
+
     func testXPCListenerDelegateConfiguresAndExportsSharedService() {
         let service = AgentXPCService(
             server: AgentServer(
@@ -507,6 +622,57 @@ final class AgentServerTests: XCTestCase {
         )
     }
 
+    private func makeAdHocFallbackValidator(
+        effectiveUID: uid_t = 501,
+        consoleUID: uid_t = 501,
+        processPath: String = XPCClientValidator.requiredExecutablePath,
+        signingIdentifier: String =
+            XPCClientValidator.requiredSigningIdentifier,
+        teamIdentifier: String? = nil,
+        processCodeIdentity: @escaping @Sendable
+            (pid_t) throws -> XPCClientValidator.ProcessCodeIdentity = {
+                _ in
+                throw LiveProcessCodeInspectionError.unavailableForAdHoc
+            },
+        processExecutablePath: (@Sendable (pid_t) throws -> String)? = nil,
+        canonicalPath: @escaping @Sendable (String) throws -> String = {
+            $0
+        },
+        staticCodeIdentity: (@Sendable (String) throws
+            -> StaticCodeIdentity)? = nil,
+        filesystemMetadata: @escaping @Sendable
+            (String) throws -> FilesystemSecurityMetadata = {
+                path in
+                AgentServerTests.defaultSecureFilesystemMetadata(for: path)
+            },
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) -> XPCClientValidator {
+        XPCClientValidator(
+            securityIdentity: { _ in
+                (effectiveUID: effectiveUID, processID: 42)
+            },
+            consoleUserUID: { consoleUID },
+            processCodeIdentity: processCodeIdentity,
+            processExecutablePath: processExecutablePath ?? { _ in
+                processPath
+            },
+            canonicalPath: canonicalPath,
+            staticCodeIdentity: staticCodeIdentity ?? { _ in
+                StaticCodeIdentity(
+                    signingIdentifier: signingIdentifier,
+                    teamIdentifier: teamIdentifier,
+                    isAdHoc: true
+                )
+            },
+            filesystemMetadata: filesystemMetadata,
+            logFailure: log
+        )
+    }
+
+    private func testConnection() -> NSXPCConnection {
+        NSXPCConnection(serviceName: "test.invalid")
+    }
+
     private func secureFilesystemMetadata(
         for path: String,
         ownerUID: uid_t = 0,
@@ -568,6 +734,54 @@ private final class RecordingFilesystemInspector: @unchecked Sendable {
             paths.append(path)
         }
         return try metadata(path)
+    }
+}
+
+private final class LockedPathSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String]
+
+    init(_ paths: [String]) {
+        self.paths = paths
+    }
+
+    func next(_ processID: pid_t) throws -> String {
+        try lock.withLock {
+            guard !paths.isEmpty else {
+                throw ValidationTestError.failed
+            }
+            return paths.removeFirst()
+        }
+    }
+}
+
+private final class LockedStrings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var values: [String] {
+        lock.withLock { storage }
+    }
+
+    func append(_ value: String) {
+        lock.withLock {
+            storage.append(value)
+        }
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.withLock { storage }
+    }
+
+    func increment() {
+        lock.withLock {
+            storage += 1
+        }
     }
 }
 

@@ -738,3 +738,121 @@ PACKAGE_BUILD_EXIT=0
 ```
 
 Artifact SHA-256: `48231aef0c99ea4e5098ec710015ac03a9991d19963b2c545bf68d13df214506`.
+
+---
+
+## Runtime defect fix round 3: constrained ad-hoc XPC fallback
+
+Validation date: 2026-07-30 KST.
+
+Runtime evidence showed successful SMAppService registration, approval, and
+daemon launch, followed by `SecCodeCopyGuestWithAttributes` returning the
+no-live-guest-code class for the ad-hoc client. The validator now retains live
+SecCode process identity as the primary route and enters the experimental
+fallback only for `errSecCSNoSuchCode`. Invalid live code, unavailable
+metadata, identity mismatch, UID mismatch, and all other primary failures reject
+without fallback.
+
+The fallback binds the connection PID to the exact fixed executable with
+`proc_pidpath` before and after validation, requires exact raw and canonical
+paths, verifies the console effective UID, checks valid `SecStaticCode` at
+that canonical path, requires the exact signing identifier and ad-hoc flag, and
+rejects any real TeamIdentifier. It reuses the complete root ownership,
+no-group-or-other-write, expected object-kind, and unsafe extended ACL checks
+for every protected installation ancestor. Structured logs contain only
+`route`, `outcome`, and `reason` fields.
+
+### Security limitation
+
+This is an option-2 experimental accommodation for an ad-hoc build, not a
+replacement for Developer ID signing. PID path is sampled before and after
+static validation to fail closed on exit, path change, truncation, or observed
+PID reuse, and the installation chain is immutable under the checked policy.
+macOS does not expose the connection audit token through the public Foundation
+API used here, so the two samples cannot create the same cryptographic
+process-to-code binding as successful live SecCode validation. Production
+release remains gated on a real signing identity and the primary path; the
+fallback refuses binaries carrying a real TeamIdentifier.
+
+No app was installed and the stable app was not modified.
+
+### Focused validator tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter \
+  'AgentServerTests/(testXPCClientValidator|testAdHocFallback|testInvalidLiveCode)'
+```
+
+Result:
+
+```text
+Test Suite 'M2MaxFanControllerPackageTests.xctest' passed at 2026-07-30 14:41:56.371.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'Selected tests' passed at 2026-07-30 14:41:56.371.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 0.002 (0.004) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+FOCUSED_TEST_EXIT=0
+```
+
+Executed 14 focused tests covering the fixed-path success case plus PID path
+mismatch/change, canonical or symlink mismatch, mutable ancestor, unsafe ACL,
+wrong UID, wrong identifier, invalid static code, TeamIdentifier presence, and
+invalid live-code non-fallback behavior.
+
+### Release builds
+
+Commands:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerAgent
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Results:
+
+```text
+[1/3] Write sources
+[3/4] Compiling FanControllerAgent AgentProcessLock.swift
+[3/5] Write Objects.LinkFileList
+[4/5] Linking FanControllerAgent
+Build of product 'FanControllerAgent' complete! (1.94s)
+RELEASE_AGENT_BUILD_EXIT=0
+Building for production...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'FanControllerApp' complete! (0.13s)
+RELEASE_APP_BUILD_EXIT=0
+```
+
+### Transactional experimental package regeneration
+
+Command:
+
+```bash
+./script/build_installer.sh --experimental-helper
+/usr/bin/shasum -a 256 installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/dist-1.1.0/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp: replacing existing signature
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/dist-1.1.0/PenguinFan Experimental.app: replacing existing signature
+Built: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/dist-1.1.0/PenguinFan Experimental.app
+pkgbuild: Inferring bundle components from contents of /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/installer-root
+pkgbuild: Adding component at Applications/PenguinFan Experimental.app
+pkgbuild: Wrote package to /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.PSpuhV/PenguinFan-Experimental-1.1.0.pkg
+Built installer: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+a1b382b6b80dc19ffd9beb167dedc1c3e6a175286e46eebc6d52ee507c257663  installer/PenguinFan-Experimental-1.1.0.pkg
+PACKAGE_BUILD_EXIT=0
+```
+
+Artifact SHA-256: `a1b382b6b80dc19ffd9beb167dedc1c3e6a175286e46eebc6d52ee507c257663`.
