@@ -151,6 +151,100 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         try connection.replyToHeldRequest(with: .acknowledged)
     }
 
+    func testOneTimeoutDrainsAllPendingRequestsAndIgnoresLateEvents()
+        async throws
+    {
+        let connection = FakeXPCConnection(behavior: .hold)
+        let timeoutScheduler = ManualTimeoutScheduler()
+        let recoveryCount = LockedCounter()
+        let client = XPCControlClient(
+            connection: connection,
+            requestTimeout: 60,
+            connectionFailureHandler: {
+                recoveryCount.increment()
+            },
+            timeoutScheduler: timeoutScheduler
+        )
+        let first = Task.detached {
+            do {
+                _ = try await client.send(.heartbeat)
+                return Optional<XPCControlClientError>.none
+            } catch {
+                return error as? XPCControlClientError
+            }
+        }
+        let second = Task.detached {
+            do {
+                _ = try await client.send(.heartbeat)
+                return Optional<XPCControlClientError>.none
+            } catch {
+                return error as? XPCControlClientError
+            }
+        }
+        XCTAssertEqual(
+            connection.requestReceived.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(
+            connection.requestReceived.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(
+            timeoutScheduler.operationScheduled.wait(
+                timeout: .now() + 1
+            ),
+            .success
+        )
+        XCTAssertEqual(
+            timeoutScheduler.operationScheduled.wait(
+                timeout: .now() + 1
+            ),
+            .success
+        )
+
+        timeoutScheduler.fireFirst()
+
+        let firstError = await first.value
+        let secondError = await second.value
+        XCTAssertEqual(firstError, .timedOut)
+        XCTAssertEqual(secondError, .timedOut)
+        XCTAssertEqual(connection.invalidateCallCount, 1)
+        XCTAssertEqual(recoveryCount.value, 1)
+
+        try connection.replyToAllHeldRequests(with: .acknowledged)
+        timeoutScheduler.fireAll()
+    }
+
+    func testTimeoutForCompletedRequestDoesNotBreakConnection() async throws {
+        let connection = FakeXPCConnection(
+            behavior: .reply(.acknowledged)
+        )
+        let timeoutScheduler = ManualTimeoutScheduler()
+        let recoveryCount = LockedCounter()
+        let client = XPCControlClient(
+            connection: connection,
+            requestTimeout: 60,
+            connectionFailureHandler: {
+                recoveryCount.increment()
+            },
+            timeoutScheduler: timeoutScheduler
+        )
+
+        let result = try await client.send(.heartbeat)
+        XCTAssertEqual(result, .acknowledged)
+        XCTAssertEqual(
+            timeoutScheduler.operationScheduled.wait(
+                timeout: .now() + 1
+            ),
+            .success
+        )
+
+        timeoutScheduler.fireFirst()
+
+        XCTAssertEqual(connection.invalidateCallCount, 0)
+        XCTAssertEqual(recoveryCount.value, 0)
+    }
+
     func testControlClientInterruptionFailsPendingReplyAndRequestsRecovery()
         async throws
     {
@@ -270,13 +364,23 @@ private final class FakeXPCConnection:
     var invalidationHandler: (@Sendable () -> Void)?
     private(set) var didResume = false
 
+    let requestReceived = DispatchSemaphore(value: 0)
+
     private let behavior: Behavior
     private let lock = NSLock()
-    private var heldRequestID: UUID?
-    private var heldReply: (@Sendable (Data) -> Void)?
+    private var heldRequests: [
+        UUID: @Sendable (Data) -> Void
+    ] = [:]
+    private var storedInvalidateCallCount = 0
 
     init(behavior: Behavior) {
         self.behavior = behavior
+    }
+
+    var invalidateCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedInvalidateCallCount
     }
 
     func resume() {
@@ -284,6 +388,9 @@ private final class FakeXPCConnection:
     }
 
     func invalidate() {
+        lock.lock()
+        storedInvalidateCallCount += 1
+        lock.unlock()
         invalidationHandler?()
     }
 
@@ -295,9 +402,9 @@ private final class FakeXPCConnection:
         do {
             let request = try XPCMessageAdapter.decodeRequest(requestData)
             lock.lock()
-            heldRequestID = request.id
-            heldReply = reply
+            heldRequests[request.id] = reply
             lock.unlock()
+            requestReceived.signal()
 
             switch behavior {
             case .reply(let result):
@@ -316,14 +423,63 @@ private final class FakeXPCConnection:
 
     func replyToHeldRequest(with result: ControlResult) throws {
         lock.lock()
-        let requestID = heldRequestID
-        let reply = heldReply
+        let request = heldRequests.first
         lock.unlock()
         let response = ControlResponse(
-            id: try XCTUnwrap(requestID),
+            id: try XCTUnwrap(request?.key),
             result: result
         )
-        reply?(try XPCMessageAdapter.encodeResponse(response))
+        request?.value(try XPCMessageAdapter.encodeResponse(response))
+    }
+
+    func replyToAllHeldRequests(with result: ControlResult) throws {
+        lock.lock()
+        let requests = heldRequests
+        lock.unlock()
+
+        for (requestID, reply) in requests {
+            let response = ControlResponse(id: requestID, result: result)
+            reply(try XPCMessageAdapter.encodeResponse(response))
+        }
+    }
+}
+
+private final class ManualTimeoutScheduler:
+    XPCRequestTimeoutScheduling,
+    @unchecked Sendable
+{
+    let operationScheduled = DispatchSemaphore(value: 0)
+
+    private let lock = NSLock()
+    private var operations: [@Sendable () -> Void] = []
+
+    func schedule(
+        after delay: TimeInterval,
+        operation: @escaping @Sendable () -> Void
+    ) {
+        lock.lock()
+        operations.append(operation)
+        lock.unlock()
+        operationScheduled.signal()
+    }
+
+    func fireFirst() {
+        lock.lock()
+        let operation = operations.isEmpty
+            ? nil
+            : operations.removeFirst()
+        lock.unlock()
+        operation?()
+    }
+
+    func fireAll() {
+        lock.lock()
+        let pendingOperations = operations
+        operations.removeAll()
+        lock.unlock()
+        for operation in pendingOperations {
+            operation()
+        }
     }
 }
 

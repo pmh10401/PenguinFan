@@ -143,6 +143,27 @@ protocol XPCControlConnection: AnyObject, Sendable {
     )
 }
 
+protocol XPCRequestTimeoutScheduling: Sendable {
+    func schedule(
+        after delay: TimeInterval,
+        operation: @escaping @Sendable () -> Void
+    )
+}
+
+private struct DispatchXPCRequestTimeoutScheduler:
+    XPCRequestTimeoutScheduling
+{
+    func schedule(
+        after delay: TimeInterval,
+        operation: @escaping @Sendable () -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + max(0, delay),
+            execute: operation
+        )
+    }
+}
+
 final class XPCControlClient: ControlClient, @unchecked Sendable {
     static let machServiceName =
         "com.local.PenguinFan.experimental.agent"
@@ -153,6 +174,7 @@ final class XPCControlClient: ControlClient, @unchecked Sendable {
     private let connection: any XPCControlConnection
     private let requestTimeout: TimeInterval
     private let connectionFailureHandler: @Sendable () -> Void
+    private let timeoutScheduler: any XPCRequestTimeoutScheduling
     private let lock = NSLock()
     private var pending: [UUID: Continuation] = [:]
     private var connectionFailure: XPCControlClientError?
@@ -160,11 +182,14 @@ final class XPCControlClient: ControlClient, @unchecked Sendable {
     init(
         connection: any XPCControlConnection,
         requestTimeout: TimeInterval,
-        connectionFailureHandler: @escaping @Sendable () -> Void
+        connectionFailureHandler: @escaping @Sendable () -> Void,
+        timeoutScheduler: any XPCRequestTimeoutScheduling =
+            DispatchXPCRequestTimeoutScheduler()
     ) {
         self.connection = connection
         self.requestTimeout = max(0, requestTimeout)
         self.connectionFailureHandler = connectionFailureHandler
+        self.timeoutScheduler = timeoutScheduler
 
         connection.interruptionHandler = { [weak self] in
             self?.failConnection(with: .interrupted)
@@ -206,12 +231,11 @@ final class XPCControlClient: ControlClient, @unchecked Sendable {
                 }
             )
 
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(
-                deadline: .now() + requestTimeout
-            ) {
-                self.complete(
-                    request.id,
-                    with: .failure(XPCControlClientError.timedOut)
+            timeoutScheduler.schedule(after: requestTimeout) {
+                self.failConnection(
+                    with: .timedOut,
+                    onlyIfRequestIsPending: request.id,
+                    invalidateConnection: true
                 )
             }
         }
@@ -259,9 +283,17 @@ final class XPCControlClient: ControlClient, @unchecked Sendable {
         continuation?.resume(with: result)
     }
 
-    private func failConnection(with error: XPCControlClientError) {
+    private func failConnection(
+        with error: XPCControlClientError,
+        onlyIfRequestIsPending requestID: UUID? = nil,
+        invalidateConnection: Bool = false
+    ) {
         lock.lock()
         guard connectionFailure == nil else {
+            lock.unlock()
+            return
+        }
+        if let requestID, pending[requestID] == nil {
             lock.unlock()
             return
         }
@@ -270,6 +302,9 @@ final class XPCControlClient: ControlClient, @unchecked Sendable {
         pending.removeAll()
         lock.unlock()
 
+        if invalidateConnection {
+            connection.invalidate()
+        }
         for continuation in continuations {
             continuation.resume(throwing: error)
         }
