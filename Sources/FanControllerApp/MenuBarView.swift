@@ -185,26 +185,33 @@ struct MenuBarView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button("설정") {
-                if let openSettingsAction {
-                    openSettingsAction()
-                } else {
-                    openWindow(id: "settings")
+        VStack(spacing: 8) {
+            Text(ProductBrand.currentVersionText)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity)
+
+            HStack {
+                Button("설정") {
+                    if let openSettingsAction {
+                        openSettingsAction()
+                    } else {
+                        openWindow(id: "settings")
+                    }
                 }
-            }
-            Button("진단") {
-                if let openDiagnosticsAction {
-                    openDiagnosticsAction()
-                } else {
-                    openWindow(id: "diagnostics")
+                Button("진단") {
+                    if let openDiagnosticsAction {
+                        openDiagnosticsAction()
+                    } else {
+                        openWindow(id: "diagnostics")
+                    }
                 }
+                Spacer()
+                Button("종료") { NSApplication.shared.terminate(nil) }
             }
-            Spacer()
-            Button("종료") { NSApplication.shared.terminate(nil) }
+            .buttonStyle(.plain)
+            .font(.caption)
         }
-        .buttonStyle(.plain)
-        .font(.caption)
         .padding(14)
     }
 

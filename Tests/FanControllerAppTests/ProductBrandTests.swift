@@ -9,6 +9,18 @@ final class ProductBrandTests: XCTestCase {
         XCTAssertEqual(ProductBrand.diagnosticsTitle, "PenguinFan 진단")
     }
 
+    func testVersionTextIncludesReleaseVersion() {
+        XCTAssertEqual(
+            ProductBrand.versionText(version: "1.0.12"),
+            "PenguinFan 1.0.12"
+        )
+    }
+
+    func testVersionTextFallsBackToProductName() {
+        XCTAssertEqual(ProductBrand.versionText(version: nil), "PenguinFan")
+        XCTAssertEqual(ProductBrand.versionText(version: "  "), "PenguinFan")
+    }
+
     func testMenuBarIconIsAnEighteenPointTemplateImage() {
         let image = PenguinMenuBarIcon.make()
 
