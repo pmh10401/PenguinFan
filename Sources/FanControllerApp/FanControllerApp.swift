@@ -149,11 +149,13 @@ final class FanControllerAppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings() {
         if settingsWindow == nil {
-            settingsWindow = makeWindow(
+            let window = makeWindow(
                 title: ProductBrand.settingsTitle,
-                size: NSSize(width: 620, height: 620),
+                size: NSSize(width: 760, height: 680),
                 rootView: SettingsView(model: model)
             )
+            window.contentMinSize = NSSize(width: 700, height: 600)
+            settingsWindow = window
         }
         present(settingsWindow)
     }

@@ -86,6 +86,10 @@ final class AppModel: ObservableObject {
         return Double(minimum)...Double(maximum)
     }
 
+    var safeRPMIntegerRange: ClosedRange<Int> {
+        Int(safeRPMRange.lowerBound)...Int(safeRPMRange.upperBound)
+    }
+
     func record(_ newSnapshot: SensorSnapshot) {
         snapshot = newSnapshot
         history.append(newSnapshot)
@@ -223,6 +227,17 @@ final class AppModel: ObservableObject {
 
     func returnToSystemAuto() {
         selectMode(.systemAuto)
+    }
+
+    func updateManualRPM(_ rpm: Int) {
+        settings.manualRPM = min(
+            max(rpm, safeRPMIntegerRange.lowerBound),
+            safeRPMIntegerRange.upperBound
+        )
+    }
+
+    func adjustManualRPM(by amount: Int) {
+        updateManualRPM(settings.manualRPM + amount)
     }
 
     func markSystemAuto() {

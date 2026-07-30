@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PUBLISHED_PACKAGE="$ROOT/installer/PenguinFan-1.1.0.pkg"
+PUBLISHED_PACKAGE="$ROOT/installer/PenguinFan-1.2.0.pkg"
 FINAL_PACKAGE=""
 LOCK_FILE=""
 HELPER_LABEL="com.local.PenguinFan.agent"
@@ -173,8 +173,8 @@ TEST_ROOT_TOKEN="$(/usr/bin/uuidgen)"
 printf '%s\n' "$TEST_ROOT_TOKEN" > "$TEST_ROOT/.penguinfan-task7-owner"
 /bin/chmod 600 "$TEST_ROOT/.penguinfan-task7-owner"
 TEST_INSTALLER_DIR="$TEST_ROOT/installer"
-FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-1.1.0.pkg"
-LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-1.1.0.publication.lock"
+FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-1.2.0.pkg"
+LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-1.2.0.publication.lock"
 
 BUILD_COMMAND=(
   /usr/bin/env
@@ -280,9 +280,9 @@ verify_app() {
   [[ -d "$app" ]] || fail "release app is missing"
   [[ "$(plist_value "$info" CFBundleIdentifier)" == \
     "com.local.PenguinFan" ]] || fail "wrong bundle identifier"
-  [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.1.0" ]] \
+  [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.2.0" ]] \
     || fail "wrong app version"
-  [[ "$(plist_value "$info" CFBundleVersion)" == "14" ]] \
+  [[ "$(plist_value "$info" CFBundleVersion)" == "15" ]] \
     || fail "wrong build number"
   [[ "$(plist_value "$info" CFBundleDisplayName)" == \
     "PenguinFan" ]] || fail "wrong display name"
@@ -361,7 +361,7 @@ verify_package() {
 
 assert_no_staging_directories() {
   if /usr/bin/find "$TEST_INSTALLER_DIR" -maxdepth 1 -type d \
-    -name ".PenguinFan-1.1.0.staging.*" \
+    -name ".PenguinFan-1.2.0.staging.*" \
     -print -quit | /usr/bin/grep -q .; then
     fail "release staging directory was not cleaned"
   fi
@@ -426,7 +426,7 @@ wait_for_app_replacement() {
 assert_no_app_staging_directories() {
   local output_root="$1"
   if /usr/bin/find "$output_root" -maxdepth 1 -type d \
-    -name ".PenguinFan-1.1.0.app-staging.*" \
+    -name ".PenguinFan-1.2.0.app-staging.*" \
     -print -quit | /usr/bin/grep -q .; then
     fail "release app staging directory was not cleaned"
   fi
@@ -549,7 +549,7 @@ done
 # Direct Release app builds must gate identity before touching an existing
 # app and must restore the complete prior directory on publication failure.
 DIRECT_OUTPUT_ROOT="$TEST_ROOT/direct-app-output"
-DIRECT_APP="$DIRECT_OUTPUT_ROOT/dist-1.1.0/PenguinFan.app"
+DIRECT_APP="$DIRECT_OUTPUT_ROOT/dist-1.2.0/PenguinFan.app"
 mkdir -p "$DIRECT_APP/Contents/Resources"
 printf "direct app sentinel\n" \
   > "$DIRECT_APP/Contents/Resources/transaction-sentinel.txt"
@@ -612,7 +612,7 @@ assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
 "${DIRECT_BUILD_COMMAND[@]}"
 verify_app "$DIRECT_APP"
 DIRECT_VALID_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
-DIRECT_APP_LOCK="$DIRECT_OUTPUT_ROOT/.PenguinFan-1.1.0.app-publication.lock"
+DIRECT_APP_LOCK="$DIRECT_OUTPUT_ROOT/.PenguinFan-1.2.0.app-publication.lock"
 
 if PENGUINFAN_TASK7_SIGNAL_BEFORE_APP_BACKUP_MOVE=1 \
   "${DIRECT_BUILD_COMMAND[@]}"; then
