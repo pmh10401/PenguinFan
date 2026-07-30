@@ -139,7 +139,8 @@ final class RuntimeController: ObservableObject {
     private func request(
         mode: ControlMode,
         generation: UInt64,
-        model: AppModel
+        model: AppModel,
+        commitPendingModeAfterReadiness: Bool = false
     ) async {
         guard !model.isPrivilegedServiceRemovalInProgress
                 || mode == .systemAuto
@@ -179,6 +180,15 @@ final class RuntimeController: ObservableObject {
             )
             guard model.isCurrentModeRequest(generation) else {
                 return
+            }
+            if commitPendingModeAfterReadiness {
+                guard model.pendingPrivilegedMode == mode,
+                      model.applyPendingPrivilegedMode(
+                          generation: generation
+                      ) == mode
+                else {
+                    return
+                }
             }
             await coordinator.update(settings: model.settings)
             guard model.isCurrentModeRequest(generation) else {
@@ -220,7 +230,9 @@ final class RuntimeController: ObservableObject {
         }
 
         serviceManager.refreshStatus()
-        if serviceManager.state == .notRegistered {
+        if serviceManager.state == .notRegistered
+            || serviceManager.state == .notFound
+        {
             serviceManager.register()
         }
         guard model.isCurrentModeRequest(generation) else {
@@ -230,17 +242,23 @@ final class RuntimeController: ObservableObject {
 
         switch serviceManager.state {
         case .enabled:
-            guard let mode = model.applyPendingPrivilegedMode(
-                generation: generation
-            ) else {
+            guard let mode = model.pendingPrivilegedMode else {
                 return
             }
             model.requiresFreshPrivilegedConfirmation = false
             await request(
                 mode: mode,
                 generation: generation,
-                model: model
+                model: model,
+                commitPendingModeAfterReadiness: true
             )
+            guard model.isCurrentModeRequest(generation),
+                  model.controlStatus == .failed
+            else {
+                return
+            }
+            model.pendingPrivilegedMode = nil
+            model.isPrivilegedApprovalPresented = false
         case .requiresApproval:
             guard model.isCurrentModeRequest(generation) else {
                 return

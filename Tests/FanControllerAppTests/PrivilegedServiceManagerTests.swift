@@ -478,8 +478,8 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertEqual(requestedModes, [.manual])
     }
 
-    func testExplicitConfirmationRegistersVerifiesStatusAndAppliesPendingMode()
-        async
+    func testNotFoundExplicitConfirmationWaitsForReadinessBeforePendingMode()
+        async throws
     {
         let fan = FanDescriptor(
             index: 0,
@@ -492,13 +492,12 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             fans: [fan],
             manualFanIndices: []
         )
-        let service = FakeServiceRegistration(status: .notRegistered)
+        let connection = FakeXPCConnection(behavior: .hold)
+        let service = FakeServiceRegistration(status: .notFound)
         service.onRegister = { service.status = .enabled }
         let manager = makeManager(
             service: service,
-            connectionFactory: {
-                FakeXPCConnection(behavior: .reply(.status(status)))
-            }
+            connectionFactory: { connection }
         )
         let runtime = RuntimeController(serviceManager: manager)
         let model = AppModel()
@@ -512,7 +511,18 @@ final class PrivilegedServiceManagerTests: XCTestCase {
 
         XCTAssertEqual(service.registerCallCount, 0)
 
-        await model.confirmPrivilegedApproval()
+        let confirmation = Task {
+            await model.confirmPrivilegedApproval()
+        }
+        await waitForRequest(connection)
+
+        XCTAssertEqual(service.registerCallCount, 1)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.pendingPrivilegedMode, .curve)
+        XCTAssertNotEqual(model.controlStatus, .curve)
+
+        try connection.replyToHeldRequest(with: .status(status))
+        await confirmation.value
 
         XCTAssertEqual(service.registerCallCount, 1)
         XCTAssertEqual(model.privilegedServiceState, .enabled)
@@ -555,7 +565,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
     func testRegistrationFailureReturnsSafelyToSystemWithActionableStatus()
         async
     {
-        let service = FakeServiceRegistration(status: .notRegistered)
+        let service = FakeServiceRegistration(status: .notFound)
         service.registerError = TestFailure.expected
         let manager = makeManager(service: service)
         let runtime = RuntimeController(serviceManager: manager)
@@ -564,7 +574,9 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         model.selectMode(.curve)
 
         await model.confirmPrivilegedApproval()
+        await model.confirmPrivilegedApproval()
 
+        XCTAssertEqual(service.registerCallCount, 1)
         XCTAssertEqual(model.settings.mode, .systemAuto)
         XCTAssertEqual(model.controlStatus, .failed)
         XCTAssertNil(model.pendingPrivilegedMode)
@@ -572,6 +584,23 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertTrue(
             model.diagnosticMessage?.contains("읽기 전용") == true
         )
+        XCTAssertFalse(model.ipcConnected)
+    }
+
+    func testStaleConfirmationAfterSystemSelectionDoesNotRegister() async {
+        let service = FakeServiceRegistration(status: .notFound)
+        let manager = makeManager(service: service)
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.curve)
+        model.selectMode(.systemAuto)
+
+        await model.confirmPrivilegedApproval()
+
+        XCTAssertEqual(service.registerCallCount, 0)
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertNil(model.pendingPrivilegedMode)
         XCTAssertFalse(model.ipcConnected)
     }
 
@@ -583,7 +612,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
             modeKey: "F0Md"
         )
         let connection = FakeXPCConnection(behavior: .hold)
-        let service = FakeServiceRegistration(status: .notRegistered)
+        let service = FakeServiceRegistration(status: .notFound)
         service.onRegister = { service.status = .enabled }
         let manager = makeManager(
             service: service,
@@ -615,6 +644,7 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         )
         await confirmation.value
 
+        XCTAssertEqual(service.registerCallCount, 1)
         XCTAssertEqual(model.settings.mode, .systemAuto)
         XCTAssertEqual(model.controlStatus, .systemAuto)
         XCTAssertNil(model.pendingPrivilegedMode)

@@ -643,3 +643,98 @@ PACKAGE_BUILD_EXIT=0
 ```
 
 Artifact SHA-256: `490dc3564b8b13b16825be3f27b8ffaa4a9db6d32505f3ff7da57d69bbc8f7eb`.
+
+---
+
+## Runtime defect fix round 2: RuntimeController registration reachability
+
+Validation date: 2026-07-30 KST.
+
+Review established that the manager accepted `.notFound`, but the
+user-confirmed RuntimeController path called `manager.register()` only for
+`.notRegistered`. The integration now treats `.notRegistered` and
+`.notFound` as the two attemptable registration states after explicit
+confirmation. It still performs no registration before confirmation and does
+not auto-enable or enter the diagnostic legacy fallback because a lookup
+returns `.notFound`.
+
+Generation guards and System fail-closed handling remain in force. The focused
+regression test also exposed that pending mode was committed before XPC
+readiness; custom mode commit now occurs only after readiness succeeds in the
+same generation. Registration errors remain actionable failures in System
+mode, and repeated or stale confirmation cannot duplicate registration.
+
+No app was installed and the stable app was not modified.
+
+### Focused RuntimeController tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result:
+
+```text
+Test Suite 'M2MaxFanControllerPackageTests.xctest' passed at 2026-07-30 14:27:47.802.
+	 Executed 39 tests, with 0 failures (0 unexpected) in 0.038 (0.040) seconds
+Test Suite 'Selected tests' passed at 2026-07-30 14:27:47.802.
+	 Executed 39 tests, with 0 failures (0 unexpected) in 0.038 (0.041) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+FOCUSED_TEST_EXIT=0
+```
+
+Coverage includes zero calls before explicit confirmation, one call from
+`.notFound`, pending-mode application only after readiness, thrown-error
+fail-closed behavior, and repeated/stale confirmation suppression.
+
+### Release app build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/4] Compiling FanControllerApp AppModel.swift
+[3/5] Write Objects.LinkFileList
+[4/5] Linking FanControllerApp
+Build of product 'FanControllerApp' complete! (3.63s)
+RELEASE_BUILD_EXIT=0
+```
+
+### Transactional experimental package regeneration
+
+Command:
+
+```bash
+./script/build_installer.sh --experimental-helper
+/usr/bin/shasum -a 256 installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/dist-1.1.0/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp: replacing existing signature
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/dist-1.1.0/PenguinFan Experimental.app: replacing existing signature
+Built: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/dist-1.1.0/PenguinFan Experimental.app
+pkgbuild: Inferring bundle components from contents of /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/installer-root
+pkgbuild: Adding component at Applications/PenguinFan Experimental.app
+pkgbuild: Wrote package to /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/.PenguinFan-Experimental-1.1.0.staging.clkLDj/PenguinFan-Experimental-1.1.0.pkg
+Built installer: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+48231aef0c99ea4e5098ec710015ac03a9991d19963b2c545bf68d13df214506  installer/PenguinFan-Experimental-1.1.0.pkg
+PACKAGE_BUILD_EXIT=0
+```
+
+Artifact SHA-256: `48231aef0c99ea4e5098ec710015ac03a9991d19963b2c545bf68d13df214506`.
