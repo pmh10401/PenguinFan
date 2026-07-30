@@ -6,7 +6,7 @@ import SMCKit
 @MainActor
 final class RuntimeController: ObservableObject {
     private static let privilegedServiceBuildKey =
-        "PenguinFan.Experimental.PrivilegedServiceBuild"
+        "PenguinFan.Release.PrivilegedServiceBuild"
 
     private let launcher = AuthorizationLauncher()
     private let injectedServiceManager: PrivilegedServiceManager?

@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PUBLISHED_PACKAGE="$ROOT/installer/PenguinFan-Experimental-1.1.0.pkg"
+PUBLISHED_PACKAGE="$ROOT/installer/PenguinFan-1.1.0.pkg"
 FINAL_PACKAGE=""
 LOCK_FILE=""
-HELPER_LABEL="com.local.PenguinFan.experimental.agent"
+HELPER_LABEL="com.local.PenguinFan.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
 EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
@@ -167,23 +167,23 @@ else
 fi
 
 TEST_ROOT="$(/usr/bin/mktemp -d \
-  "$TRUSTED_TEST_OUTPUT_PARENT/task7-experimental-packaging.XXXXXX")"
+  "$TRUSTED_TEST_OUTPUT_PARENT/task7-release-packaging.XXXXXX")"
 /bin/chmod 700 "$TEST_ROOT"
 TEST_ROOT_TOKEN="$(/usr/bin/uuidgen)"
 printf '%s\n' "$TEST_ROOT_TOKEN" > "$TEST_ROOT/.penguinfan-task7-owner"
 /bin/chmod 600 "$TEST_ROOT/.penguinfan-task7-owner"
 TEST_INSTALLER_DIR="$TEST_ROOT/installer"
-FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-Experimental-1.1.0.pkg"
-LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-1.1.0.pkg"
+LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-1.1.0.publication.lock"
 
 BUILD_COMMAND=(
   /usr/bin/env
   PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
   PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
   PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
-  PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
+  PENGUINFAN_RELEASE_OUTPUT_DIR="$TEST_INSTALLER_DIR"
   "$ROOT/script/build_installer.sh"
-  --experimental-helper
+  --privileged-helper
   --signing-identity "$SIGNING_IDENTITY"
 )
 
@@ -277,15 +277,15 @@ verify_app() {
   local info="$contents/Info.plist"
   local daemon_plist="$contents/Library/LaunchDaemons/$HELPER_PLIST_NAME"
 
-  [[ -d "$app" ]] || fail "experimental app is missing"
+  [[ -d "$app" ]] || fail "release app is missing"
   [[ "$(plist_value "$info" CFBundleIdentifier)" == \
-    "com.local.PenguinFan.experimental" ]] || fail "wrong bundle identifier"
+    "com.local.PenguinFan" ]] || fail "wrong bundle identifier"
   [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.1.0" ]] \
     || fail "wrong app version"
   [[ "$(plist_value "$info" CFBundleVersion)" == "14" ]] \
     || fail "wrong build number"
   [[ "$(plist_value "$info" CFBundleDisplayName)" == \
-    "PenguinFan Experimental" ]] || fail "wrong display name"
+    "PenguinFan" ]] || fail "wrong display name"
 
   [[ -f "$daemon_plist" ]] || fail "embedded LaunchDaemon plist is missing"
   /usr/bin/plutil -lint "$daemon_plist" >/dev/null
@@ -312,7 +312,7 @@ verify_app() {
 
   local app_metadata
   app_metadata="$(/usr/bin/codesign -dvvv "$app" 2>&1)"
-  [[ "$app_metadata" == *"Identifier=com.local.PenguinFan.experimental"* ]] \
+  [[ "$app_metadata" == *"Identifier=com.local.PenguinFan"* ]] \
     || fail "signed app identifier is wrong"
 }
 
@@ -323,15 +323,15 @@ verify_package() {
   local payload_line
   local normalized
 
-  [[ -f "$package" ]] || fail "final experimental package is missing"
+  [[ -f "$package" ]] || fail "final release package is missing"
 
   while IFS= read -r payload_line; do
     normalized="${payload_line#./}"
     case "$normalized" in
       .|._Applications|Applications|Applications/|\
-      "Applications/._PenguinFan Experimental.app"|\
-      "Applications/PenguinFan Experimental.app"|\
-      "Applications/PenguinFan Experimental.app/"*)
+      "Applications/._PenguinFan.app"|\
+      "Applications/PenguinFan.app"|\
+      "Applications/PenguinFan.app/"*)
         ;;
       *)
         fail "unexpected package payload path: $payload_line"
@@ -350,22 +350,20 @@ verify_package() {
   expanded="$expanded_parent/expanded"
   /usr/sbin/pkgutil --expand-full "$package" "$expanded"
 
-  [[ -d "$expanded/Payload/Applications/PenguinFan Experimental.app" ]] \
-    || fail "expanded package is missing the experimental app"
-  [[ ! -e "$expanded/Payload/Applications/PenguinFan.app" ]] \
-    || fail "expanded package contains stable PenguinFan.app"
+  [[ -d "$expanded/Payload/Applications/PenguinFan.app" ]] \
+    || fail "expanded package is missing the release app"
   [[ ! -e "$expanded/Payload/Applications/FanController.app" ]] \
     || fail "expanded package contains legacy FanController.app"
 
-  verify_app "$expanded/Payload/Applications/PenguinFan Experimental.app"
+  verify_app "$expanded/Payload/Applications/PenguinFan.app"
   /bin/rm -rf "$expanded_parent"
 }
 
 assert_no_staging_directories() {
   if /usr/bin/find "$TEST_INSTALLER_DIR" -maxdepth 1 -type d \
-    -name ".PenguinFan-Experimental-1.1.0.staging.*" \
+    -name ".PenguinFan-1.1.0.staging.*" \
     -print -quit | /usr/bin/grep -q .; then
-    fail "experimental staging directory was not cleaned"
+    fail "release staging directory was not cleaned"
   fi
 }
 
@@ -428,9 +426,9 @@ wait_for_app_replacement() {
 assert_no_app_staging_directories() {
   local output_root="$1"
   if /usr/bin/find "$output_root" -maxdepth 1 -type d \
-    -name ".PenguinFan-Experimental-1.1.0.app-staging.*" \
+    -name ".PenguinFan-1.1.0.app-staging.*" \
     -print -quit | /usr/bin/grep -q .; then
-    fail "experimental app staging directory was not cleaned"
+    fail "release app staging directory was not cleaned"
   fi
 }
 
@@ -453,9 +451,9 @@ for invalid_identity in "" "-" "Missing Signing Identity"; do
     PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1
     PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT"
     PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
-    PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
+    PENGUINFAN_RELEASE_OUTPUT_DIR="$TEST_INSTALLER_DIR"
     "$ROOT/script/build_installer.sh"
-    --experimental-helper
+    --privileged-helper
   )
   if [[ -n "$invalid_identity" ]]; then
     INVALID_COMMAND+=(--signing-identity "$invalid_identity")
@@ -492,9 +490,9 @@ if /usr/bin/env \
   -u PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT \
   -u PENGUINFAN_TASK7_TEST_ROOT \
   -u PENGUINFAN_TASK7_TEST_ROOT_TOKEN \
-  PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_ROOT/default-rejected-installer" \
+  PENGUINFAN_RELEASE_OUTPUT_DIR="$TEST_ROOT/default-rejected-installer" \
   "$ROOT/script/build_installer.sh" \
-    --experimental-helper \
+    --privileged-helper \
     --signing-identity "$SIGNING_IDENTITY"; then
   fail "installer output override was accepted without the explicit test gate"
 fi
@@ -505,7 +503,7 @@ if /usr/bin/env \
   -u PENGUINFAN_TASK7_TEST_ROOT_TOKEN \
   FAN_CONTROLLER_OUTPUT_ROOT="$TEST_ROOT/default-rejected-app" \
   "$ROOT/script/build_and_run.sh" \
-    --experimental-helper \
+    --privileged-helper \
     --signing-identity "$SIGNING_IDENTITY" \
     --verify; then
   fail "app output override was accepted without the explicit test gate"
@@ -526,9 +524,9 @@ for unsafe_output in "${UNSAFE_OUTPUT_PATHS[@]}"; do
     PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT=1 \
     PENGUINFAN_TASK7_TEST_ROOT="$TEST_ROOT" \
     PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN" \
-    PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$unsafe_output" \
+    PENGUINFAN_RELEASE_OUTPUT_DIR="$unsafe_output" \
     "$ROOT/script/build_installer.sh" \
-      --experimental-helper \
+      --privileged-helper \
       --signing-identity "$SIGNING_IDENTITY"; then
     fail "installer accepted unsafe output path: $unsafe_output"
   fi
@@ -539,7 +537,7 @@ for unsafe_output in "${UNSAFE_OUTPUT_PATHS[@]}"; do
     PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN" \
     FAN_CONTROLLER_OUTPUT_ROOT="$unsafe_output" \
     "$ROOT/script/build_and_run.sh" \
-      --experimental-helper \
+      --privileged-helper \
       --signing-identity "$SIGNING_IDENTITY" \
       --verify; then
     fail "app builder accepted unsafe output path: $unsafe_output"
@@ -548,10 +546,10 @@ done
 [[ "$(file_sha "$OVERRIDE_SENTINEL")" == "$OVERRIDE_SENTINEL_SHA" ]] \
   || fail "adversarial output-path tests changed their protected sentinel"
 
-# Direct Experimental app builds must gate identity before touching an existing
+# Direct Release app builds must gate identity before touching an existing
 # app and must restore the complete prior directory on publication failure.
 DIRECT_OUTPUT_ROOT="$TEST_ROOT/direct-app-output"
-DIRECT_APP="$DIRECT_OUTPUT_ROOT/dist-1.1.0/PenguinFan Experimental.app"
+DIRECT_APP="$DIRECT_OUTPUT_ROOT/dist-1.1.0/PenguinFan.app"
 mkdir -p "$DIRECT_APP/Contents/Resources"
 printf "direct app sentinel\n" \
   > "$DIRECT_APP/Contents/Resources/transaction-sentinel.txt"
@@ -565,7 +563,7 @@ for invalid_identity in "" "-" "Missing Signing Identity"; do
     PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
     FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
     "$ROOT/script/build_and_run.sh"
-    --experimental-helper
+    --privileged-helper
     --verify
   )
   if [[ -n "$invalid_identity" ]]; then
@@ -587,7 +585,7 @@ DIRECT_BUILD_COMMAND=(
   PENGUINFAN_TASK7_TEST_ROOT_TOKEN="$TEST_ROOT_TOKEN"
   FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
   "$ROOT/script/build_and_run.sh"
-  --experimental-helper
+  --privileged-helper
   --signing-identity "$SIGNING_IDENTITY"
   --verify
 )
@@ -614,7 +612,7 @@ assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
 "${DIRECT_BUILD_COMMAND[@]}"
 verify_app "$DIRECT_APP"
 DIRECT_VALID_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
-DIRECT_APP_LOCK="$DIRECT_OUTPUT_ROOT/.PenguinFan-Experimental-1.1.0.app-publication.lock"
+DIRECT_APP_LOCK="$DIRECT_OUTPUT_ROOT/.PenguinFan-1.1.0.app-publication.lock"
 
 if PENGUINFAN_TASK7_SIGNAL_BEFORE_APP_BACKUP_MOVE=1 \
   "${DIRECT_BUILD_COMMAND[@]}"; then

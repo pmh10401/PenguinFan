@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="1.0.12"
 VERSION_WAS_SET=0
-EXPERIMENTAL_HELPER=0
+PRIVILEGED_HELPER=0
 SIGNING_IDENTITY=""
 EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
 CURRENT_UID="$(/usr/bin/id -u)"
@@ -78,7 +78,7 @@ validate_test_output_root() {
   local marker_mode
 
   [[ "${PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT:-0}" == "1" ]] \
-    || { echo "Experimental output overrides are disabled." >&2; return 1; }
+    || { echo "Release output overrides are disabled." >&2; return 1; }
   [[ -n "$test_root" ]] && [[ -n "$token" ]] \
     || { echo "A process-owned Task 7 test root is required." >&2; return 1; }
   [[ "$token" =~ ^[A-Za-z0-9-]{16,128}$ ]] \
@@ -109,18 +109,18 @@ validate_test_output_root() {
     || { echo "Task 7 test-root owner marker is invalid." >&2; return 1; }
 
   path_has_no_symlink_components "$output_root" \
-    || { echo "Experimental output root has an unsafe path." >&2; return 1; }
+    || { echo "Release output root has an unsafe path." >&2; return 1; }
   case "$output_root" in
     "$test_root"/*)
       ;;
     *)
-      echo "Experimental output root is outside the process-owned test root." >&2
+      echo "Release output root is outside the process-owned test root." >&2
       return 1
       ;;
   esac
   if [[ -e "$output_root" ]] || [[ -L "$output_root" ]]; then
     [[ -d "$output_root" ]] && [[ ! -L "$output_root" ]] \
-      || { echo "Experimental output root is not a directory." >&2; return 1; }
+      || { echo "Release output root is not a directory." >&2; return 1; }
   fi
 }
 
@@ -171,8 +171,8 @@ safe_move() {
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --experimental-helper)
-      EXPERIMENTAL_HELPER=1
+    --privileged-helper)
+      PRIVILEGED_HELPER=1
       ;;
     --signing-identity)
       [[ "$#" -ge 2 ]] && [[ -n "$2" ]] \
@@ -207,7 +207,7 @@ validate_signing_identity() {
   local team_identifier
 
   if [[ -z "$identity" ]] || [[ "$identity" == "-" ]]; then
-    echo "Experimental packaging requires an explicit non-ad-hoc signing identity." >&2
+    echo "Release packaging requires an explicit non-ad-hoc signing identity." >&2
     return 1
   fi
   if ! /usr/bin/security find-identity -v -p codesigning \
@@ -219,7 +219,7 @@ validate_signing_identity() {
 
   mkdir -p "$ROOT/.build"
   probe_dir="$(/usr/bin/mktemp -d \
-    "$ROOT/.build/experimental-signing-probe.XXXXXX")"
+    "$ROOT/.build/release-signing-probe.XXXXXX")"
   probe="$probe_dir/probe"
   /bin/cp /usr/bin/true "$probe"
   if ! /usr/bin/codesign --force --options runtime --timestamp=none \
@@ -248,25 +248,25 @@ validate_signing_identity() {
     || [[ -z "$team_identifier" ]] \
     || [[ "$team_identifier" != "$expected_team" ]] \
     || [[ "$metadata" != *"(runtime)"* ]]; then
-    printf 'Signing identity metadata did not match the experimental policy: %s\n' \
+    printf 'Signing identity metadata did not match the release policy: %s\n' \
       "$identity" >&2
     return 1
   fi
 }
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ "$VERSION_WAS_SET" -eq 1 ]]; then
-    echo "Experimental helper version is fixed at 1.1.0." >&2
+    echo "Release helper version is fixed at 1.1.0." >&2
     exit 64
   fi
   VERSION="1.1.0"
-  APP_BUNDLE_NAME="PenguinFan Experimental.app"
-  PACKAGE_NAME="PenguinFan-Experimental-1.1.0.pkg"
-  PACKAGE_IDENTIFIER="com.local.PenguinFan.experimental"
+  APP_BUNDLE_NAME="PenguinFan.app"
+  PACKAGE_NAME="PenguinFan-1.1.0.pkg"
+  PACKAGE_IDENTIFIER="com.local.PenguinFan"
   OUTPUT_DIR="$ROOT/installer"
   OUTPUT_DIR_IS_TEST=0
   FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
-  LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+  LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.1.0.publication.lock"
   LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"
   LOCK_OWNED=0
   PUBLICATION_STATE_MANAGED=0
@@ -279,13 +279,13 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   validate_signing_identity \
     "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" || exit 64
 
-  if [[ "${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR+x}" == "x" ]]; then
-    validate_test_output_root "${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR:-}" \
+  if [[ "${PENGUINFAN_RELEASE_OUTPUT_DIR+x}" == "x" ]]; then
+    validate_test_output_root "${PENGUINFAN_RELEASE_OUTPUT_DIR:-}" \
       || exit 64
-    OUTPUT_DIR="$PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR"
+    OUTPUT_DIR="$PENGUINFAN_RELEASE_OUTPUT_DIR"
     OUTPUT_DIR_IS_TEST=1
     FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
-    LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+    LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.1.0.publication.lock"
   fi
 
   if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
@@ -295,7 +295,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   fi
 
   path_has_no_symlink_components "$OUTPUT_DIR" \
-    || { echo "Experimental output directory has an unsafe path." >&2; exit 64; }
+    || { echo "Release output directory has an unsafe path." >&2; exit 64; }
   mkdir -p "$OUTPUT_DIR"
   if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
     validate_test_output_root "$OUTPUT_DIR" || exit 64
@@ -303,7 +303,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   assert_safe_mutation_path "$FINAL_PACKAGE" "$OUTPUT_DIR" || exit 64
   assert_safe_mutation_path "$LOCK_FILE" "$OUTPUT_DIR" || exit 64
 
-  cleanup_experimental_publication() {
+  cleanup_release_publication() {
     local result=$?
     local cleanup_ok=1
 
@@ -354,7 +354,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     exit "$result"
   }
 
-  trap cleanup_experimental_publication EXIT
+  trap cleanup_release_publication EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -376,14 +376,14 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   fi
 
   STAGING_DIR="$(/usr/bin/mktemp -d \
-    "$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.staging.XXXXXX")"
+    "$OUTPUT_DIR/.PenguinFan-1.1.0.staging.XXXXXX")"
   PRIOR_VALID_PACKAGE="$STAGING_DIR/prior-validated-package.pkg"
 
   if [[ -L "$FINAL_PACKAGE" ]]; then
     echo "Final package path is a symlink." >&2
     exit 1
   elif [[ -f "$FINAL_PACKAGE" ]]; then
-    if "$ROOT/script/validate_experimental_package.sh" \
+    if "$ROOT/script/validate_release_package.sh" \
       "$FINAL_PACKAGE" \
       "$SIGNING_IDENTITY" \
       "$EXPECTED_TEAM_IDENTIFIER" >/dev/null; then
@@ -415,18 +415,18 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
     FAN_CONTROLLER_OUTPUT_ROOT="$STAGING_DIR" \
       "$ROOT/script/build_and_run.sh" \
-        --experimental-helper \
+        --privileged-helper \
         --signing-identity "$SIGNING_IDENTITY" \
         --verify
   else
     "$ROOT/script/build_and_run.sh" \
-      --experimental-helper \
+      --privileged-helper \
       --signing-identity "$SIGNING_IDENTITY" \
       --verify
   fi
 else
   if [[ -n "$SIGNING_IDENTITY" ]]; then
-    echo "--signing-identity is supported only with --experimental-helper." >&2
+    echo "--signing-identity is supported only with --privileged-helper." >&2
     exit 64
   fi
   APP_BUNDLE_NAME="PenguinFan.app"
@@ -437,7 +437,7 @@ else
     "$ROOT/script/build_and_run.sh" --verify
 fi
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ "$OUTPUT_DIR_IS_TEST" -eq 1 ]]; then
     APP="$STAGING_DIR/dist-$VERSION/$APP_BUNDLE_NAME"
   else
@@ -447,14 +447,14 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   PACKAGE="$STAGING_DIR/$PACKAGE_NAME"
 else
   APP="$ROOT/dist-$VERSION/$APP_BUNDLE_NAME"
-  PKG_ROOT="$ROOT/.build/installer-root-$VERSION-$EXPERIMENTAL_HELPER"
+  PKG_ROOT="$ROOT/.build/installer-root-$VERSION-$PRIVILEGED_HELPER"
   OUTPUT_DIR="$ROOT/installer"
   PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
 fi
 
 DESTINATION="$PKG_ROOT/Applications/$APP_BUNDLE_NAME"
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   safe_remove_tree "$PKG_ROOT" "$OUTPUT_DIR"
 else
   rm -rf "$PKG_ROOT"
@@ -463,7 +463,7 @@ mkdir -p "$PKG_ROOT/Applications" "$OUTPUT_DIR"
 COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc "$APP" "$DESTINATION"
 /usr/bin/xattr -cr "$PKG_ROOT"
 find "$PKG_ROOT" -name '._*' -delete
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   safe_remove_file "$PACKAGE" "$OUTPUT_DIR"
 else
   rm -f "$PACKAGE"
@@ -476,7 +476,7 @@ PKGBUILD_ARGUMENTS=(
   --install-location /
 )
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 0 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 0 ]]; then
   PKGBUILD_ARGUMENTS+=(--scripts "$ROOT/script/package_scripts")
 fi
 
@@ -492,31 +492,31 @@ if ! /usr/sbin/pkgutil --payload-files "$PACKAGE" \
   exit 1
 fi
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   INFO_PLIST="$APP/Contents/Info.plist"
-  DAEMON_PLIST="$APP/Contents/Library/LaunchDaemons/com.local.PenguinFan.experimental.agent.plist"
+  DAEMON_PLIST="$APP/Contents/Library/LaunchDaemons/com.local.PenguinFan.agent.plist"
   MAIN_EXECUTABLE="$APP/Contents/MacOS/FanControllerApp"
   HELPER_EXECUTABLE="$APP/Contents/Helpers/FanControllerAgent"
 
   [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw \
-    -o - "$INFO_PLIST")" == "com.local.PenguinFan.experimental" ]] \
-    || { echo "Experimental bundle identifier verification failed." >&2; exit 1; }
+    -o - "$INFO_PLIST")" == "com.local.PenguinFan" ]] \
+    || { echo "Release bundle identifier verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw \
     -o - "$INFO_PLIST")" == "1.1.0" ]] \
-    || { echo "Experimental version verification failed." >&2; exit 1; }
+    || { echo "Release version verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleVersion raw \
     -o - "$INFO_PLIST")" == "14" ]] \
-    || { echo "Experimental build verification failed." >&2; exit 1; }
+    || { echo "Release build verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleDisplayName raw \
-    -o - "$INFO_PLIST")" == "PenguinFan Experimental" ]] \
-    || { echo "Experimental display name verification failed." >&2; exit 1; }
+    -o - "$INFO_PLIST")" == "PenguinFan" ]] \
+    || { echo "Release display name verification failed." >&2; exit 1; }
 
   [[ -f "$DAEMON_PLIST" ]] \
     || { echo "Embedded LaunchDaemon plist is missing." >&2; exit 1; }
   /usr/bin/plutil -lint "$DAEMON_PLIST" >/dev/null
   [[ "$(/usr/bin/plutil -extract Label raw \
     -o - "$DAEMON_PLIST")" == \
-    "com.local.PenguinFan.experimental.agent" ]] \
+    "com.local.PenguinFan.agent" ]] \
     || { echo "LaunchDaemon label verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract BundleProgram raw \
     -o - "$DAEMON_PLIST")" == \
@@ -526,13 +526,13 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     -o - "$DAEMON_PLIST")" == "Interactive" ]] \
     || { echo "LaunchDaemon ProcessType verification failed." >&2; exit 1; }
   [[ "$(/usr/libexec/PlistBuddy \
-    -c "Print :MachServices:com.local.PenguinFan.experimental.agent" \
+    -c "Print :MachServices:com.local.PenguinFan.agent" \
     "$DAEMON_PLIST")" == "true" ]] \
     || { echo "LaunchDaemon MachServices verification failed." >&2; exit 1; }
   [[ "$(/usr/libexec/PlistBuddy \
     -c "Print :SpawnConstraint:signing-identifier" \
     "$DAEMON_PLIST")" == \
-    "com.local.PenguinFan.experimental.agent" ]] \
+    "com.local.PenguinFan.agent" ]] \
     || { echo "SpawnConstraint signing identifier failed." >&2; exit 1; }
   [[ "$(/usr/libexec/PlistBuddy \
     -c "Print :SpawnConstraint:team-identifier" \
@@ -544,9 +544,9 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     || { echo "SpawnConstraint validation category failed." >&2; exit 1; }
 
   [[ -x "$MAIN_EXECUTABLE" ]] \
-    || { echo "Experimental main executable is missing." >&2; exit 1; }
+    || { echo "Release main executable is missing." >&2; exit 1; }
   [[ -x "$HELPER_EXECUTABLE" ]] \
-    || { echo "Experimental helper executable is missing." >&2; exit 1; }
+    || { echo "Release helper executable is missing." >&2; exit 1; }
   /usr/bin/codesign --verify --strict "$HELPER_EXECUTABLE"
   /usr/bin/codesign --verify --strict "$MAIN_EXECUTABLE"
   /usr/bin/codesign --verify --deep --strict "$APP"
@@ -563,7 +563,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     team_identifier="$(printf '%s\n' "$metadata" \
       | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
     [[ "$metadata" != *"Signature=adhoc"* ]] \
-      || { echo "Experimental item is ad-hoc signed: $item" >&2; exit 1; }
+      || { echo "Release item is ad-hoc signed: $item" >&2; exit 1; }
     [[ "$authority" == "$SIGNING_IDENTITY" ]] \
       || { echo "Signing Authority verification failed: $item" >&2; exit 1; }
     [[ -n "$team_identifier" ]] \
@@ -582,13 +582,13 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   HELPER_SIGNATURE="$(/usr/bin/codesign -dvvv \
     "$HELPER_EXECUTABLE" 2>&1)"
   [[ "$HELPER_SIGNATURE" == \
-    *"Identifier=com.local.PenguinFan.experimental.agent"* ]] \
+    *"Identifier=com.local.PenguinFan.agent"* ]] \
     || { echo "Signed helper identifier verification failed." >&2; exit 1; }
   [[ "$MAIN_SIGNATURE" == \
-    *"Identifier=com.local.PenguinFan.experimental"* ]] \
+    *"Identifier=com.local.PenguinFan"* ]] \
     || { echo "Signed main identifier verification failed." >&2; exit 1; }
   [[ "$APP_SIGNATURE" == \
-    *"Identifier=com.local.PenguinFan.experimental"* ]] \
+    *"Identifier=com.local.PenguinFan"* ]] \
     || { echo "Signed app identifier verification failed." >&2; exit 1; }
 
   PAYLOAD="$(/usr/sbin/pkgutil --payload-files "$PACKAGE")"
@@ -598,22 +598,22 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     normalized="${payload_line#./}"
     case "$normalized" in
       .|._Applications|Applications|Applications/|\
-      "Applications/._PenguinFan Experimental.app"|\
-      "Applications/PenguinFan Experimental.app"|\
-      "Applications/PenguinFan Experimental.app/"*)
+      "Applications/._PenguinFan.app"|\
+      "Applications/PenguinFan.app"|\
+      "Applications/PenguinFan.app/"*)
         ;;
       *)
-        printf 'Unexpected experimental payload path: %s\n' \
+        printf 'Unexpected release payload path: %s\n' \
           "$payload_line" >&2
         exit 1
         ;;
     esac
 
     [[ "$normalized" != \
-      "Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp" ]] \
+      "Applications/PenguinFan.app/Contents/MacOS/FanControllerApp" ]] \
       || FOUND_MAIN=1
     [[ "$normalized" != \
-      "Applications/PenguinFan Experimental.app/Contents/Library/LaunchDaemons/com.local.PenguinFan.experimental.agent.plist" ]] \
+      "Applications/PenguinFan.app/Contents/Library/LaunchDaemons/com.local.PenguinFan.agent.plist" ]] \
       || FOUND_DAEMON_PLIST=1
   done <<< "$PAYLOAD"
 
@@ -622,7 +622,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   [[ "$FOUND_DAEMON_PLIST" -eq 1 ]] \
     || { echo "Installer payload is missing the LaunchDaemon plist." >&2; exit 1; }
 
-  "$ROOT/script/validate_experimental_package.sh" \
+  "$ROOT/script/validate_release_package.sh" \
     "$PACKAGE" "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER"
   NEW_PACKAGE_KNOWN_GOOD=1
 

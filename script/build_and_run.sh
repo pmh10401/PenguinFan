@@ -6,7 +6,7 @@ CONFIGURATION="release"
 SHOULD_LAUNCH=1
 SHOW_LOGS=0
 TELEMETRY=0
-EXPERIMENTAL_HELPER=0
+PRIVILEGED_HELPER=0
 SIGNING_IDENTITY=""
 EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
 BUNDLE_ID="${FAN_CONTROLLER_BUNDLE_ID:-com.local.M2MaxFanController.dev}"
@@ -14,7 +14,7 @@ APP_VERSION="${FAN_CONTROLLER_VERSION:-1.0.12}"
 BUILD_NUMBER="${FAN_CONTROLLER_BUILD_NUMBER:-13}"
 APP_DISPLAY_NAME="PenguinFan"
 APP_BUNDLE_NAME="PenguinFan.app"
-HELPER_LABEL="com.local.PenguinFan.experimental.agent"
+HELPER_LABEL="com.local.PenguinFan.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 CURRENT_UID="$(/usr/bin/id -u)"
 TRUSTED_TEST_OUTPUT_PARENT="/private/tmp/com.local.PenguinFan.task7-tests-$CURRENT_UID"
@@ -29,7 +29,7 @@ validate_signing_identity() {
   local team_identifier
 
   if [[ -z "$identity" ]] || [[ "$identity" == "-" ]]; then
-    echo "Experimental builds require an explicit non-ad-hoc signing identity." >&2
+    echo "Release builds require an explicit non-ad-hoc signing identity." >&2
     return 1
   fi
   if ! /usr/bin/security find-identity -v -p codesigning \
@@ -41,7 +41,7 @@ validate_signing_identity() {
 
   mkdir -p "$ROOT/.build"
   probe_dir="$(/usr/bin/mktemp -d \
-    "$ROOT/.build/experimental-app-signing-probe.XXXXXX")"
+    "$ROOT/.build/release-app-signing-probe.XXXXXX")"
   probe="$probe_dir/probe"
   /bin/cp /usr/bin/true "$probe"
   if ! /usr/bin/codesign --force --options runtime --timestamp=none \
@@ -70,7 +70,7 @@ validate_signing_identity() {
     || [[ -z "$team_identifier" ]] \
     || [[ "$team_identifier" != "$expected_team" ]] \
     || [[ "$metadata" != *"(runtime)"* ]]; then
-    printf 'Signing identity metadata did not match the experimental policy: %s\n' \
+    printf 'Signing identity metadata did not match the release policy: %s\n' \
       "$identity" >&2
     return 1
   fi
@@ -144,7 +144,7 @@ validate_test_output_root() {
   local marker_mode
 
   [[ "${PENGUINFAN_TASK7_ALLOW_TEST_OUTPUT_ROOT:-0}" == "1" ]] \
-    || { echo "Experimental output overrides are disabled." >&2; return 1; }
+    || { echo "Release output overrides are disabled." >&2; return 1; }
   [[ -n "$test_root" ]] && [[ -n "$token" ]] \
     || { echo "A process-owned Task 7 test root is required." >&2; return 1; }
   [[ "$token" =~ ^[A-Za-z0-9-]{16,128}$ ]] \
@@ -175,18 +175,18 @@ validate_test_output_root() {
     || { echo "Task 7 test-root owner marker is invalid." >&2; return 1; }
 
   path_has_no_symlink_components "$output_root" \
-    || { echo "Experimental output root has an unsafe path." >&2; return 1; }
+    || { echo "Release output root has an unsafe path." >&2; return 1; }
   case "$output_root" in
     "$test_root"/*)
       ;;
     *)
-      echo "Experimental output root is outside the process-owned test root." >&2
+      echo "Release output root is outside the process-owned test root." >&2
       return 1
       ;;
   esac
   if [[ -e "$output_root" ]] || [[ -L "$output_root" ]]; then
     [[ -d "$output_root" ]] && [[ ! -L "$output_root" ]] \
-      || { echo "Experimental output root is not a directory." >&2; return 1; }
+      || { echo "Release output root is not a directory." >&2; return 1; }
   fi
 }
 
@@ -253,8 +253,8 @@ while [[ "$#" -gt 0 ]]; do
     --verify)
       SHOULD_LAUNCH=0
       ;;
-    --experimental-helper)
-      EXPERIMENTAL_HELPER=1
+    --privileged-helper)
+      PRIVILEGED_HELPER=1
       ;;
     --signing-identity)
       [[ "$#" -ge 2 ]] && [[ -n "$2" ]] \
@@ -270,26 +270,26 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ -z "$SIGNING_IDENTITY" ]] || [[ "$SIGNING_IDENTITY" == "-" ]]; then
-    echo "Experimental builds require an explicit non-ad-hoc signing identity." >&2
+    echo "Release builds require an explicit non-ad-hoc signing identity." >&2
     exit 64
   fi
-  BUNDLE_ID="com.local.PenguinFan.experimental"
+  BUNDLE_ID="com.local.PenguinFan"
   APP_VERSION="1.1.0"
   BUILD_NUMBER="14"
-  APP_DISPLAY_NAME="PenguinFan Experimental"
-  APP_BUNDLE_NAME="PenguinFan Experimental.app"
+  APP_DISPLAY_NAME="PenguinFan"
+  APP_BUNDLE_NAME="PenguinFan.app"
   validate_signing_identity \
     "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" || exit 64
 elif [[ -n "$SIGNING_IDENTITY" ]]; then
-  echo "--signing-identity is supported only with --experimental-helper." >&2
+  echo "--signing-identity is supported only with --privileged-helper." >&2
   exit 64
 fi
 
 OUTPUT_ROOT="$ROOT"
 OUTPUT_ROOT_IS_TEST=0
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]] \
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]] \
   && [[ "${FAN_CONTROLLER_OUTPUT_ROOT+x}" == "x" ]]; then
   validate_test_output_root "${FAN_CONTROLLER_OUTPUT_ROOT:-}" || exit 64
   OUTPUT_ROOT="$FAN_CONTROLLER_OUTPUT_ROOT"
@@ -360,7 +360,7 @@ restore_prior_app_under_lock() {
   fi
 }
 
-cleanup_experimental_app_publication() {
+cleanup_release_app_publication() {
   local result=$?
   local cleanup_ok=1
 
@@ -389,27 +389,27 @@ cleanup_experimental_app_publication() {
   exit "$result"
 }
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ ! "$APP_LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
     || [[ "$APP_LOCK_WAIT_SECONDS" -gt 600 ]]; then
     echo "App lock wait must be an integer from 1 through 600 seconds." >&2
     exit 64
   fi
   path_has_no_symlink_components "$OUTPUT_ROOT" \
-    || { echo "Experimental output root has an unsafe path." >&2; exit 64; }
+    || { echo "Release output root has an unsafe path." >&2; exit 64; }
   mkdir -p "$OUTPUT_ROOT"
   if [[ "$OUTPUT_ROOT_IS_TEST" -eq 1 ]]; then
     validate_test_output_root "$OUTPUT_ROOT" || exit 64
   fi
   FINAL_APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
-  APP_LOCK_FILE="$OUTPUT_ROOT/.PenguinFan-Experimental-1.1.0.app-publication.lock"
+  APP_LOCK_FILE="$OUTPUT_ROOT/.PenguinFan-1.1.0.app-publication.lock"
   assert_safe_mutation_path "$FINAL_APP" "$OUTPUT_ROOT" || exit 64
   assert_safe_mutation_path "$APP_LOCK_FILE" "$OUTPUT_ROOT" || exit 64
   APP_STAGING_ROOT="$(/usr/bin/mktemp -d \
-    "$OUTPUT_ROOT/.PenguinFan-Experimental-1.1.0.app-staging.XXXXXX")"
+    "$OUTPUT_ROOT/.PenguinFan-1.1.0.app-staging.XXXXXX")"
   APP_BACKUP="$APP_STAGING_ROOT/prior-app"
   APP="$APP_STAGING_ROOT/$APP_BUNDLE_NAME"
-  trap cleanup_experimental_app_publication EXIT
+  trap cleanup_release_app_publication EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 else
@@ -420,7 +420,7 @@ CONTENTS="$APP/Contents"
 ICON_SOURCE="$ROOT/Assets/PenguinFanIcon.png"
 HELPER_PLIST_SOURCE="$ROOT/Resources/LaunchDaemons/$HELPER_PLIST_NAME"
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   safe_remove_tree "$APP" "$APP_STAGING_ROOT"
 else
   rm -rf "$APP"
@@ -433,7 +433,7 @@ install -m 0755 "$BIN_PATH/FanControllerAgent" \
 install -m 0755 "$BIN_PATH/FanDiagnostics" \
   "$CONTENTS/Helpers/FanDiagnostics"
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ ! -f "$HELPER_PLIST_SOURCE" ]]; then
     echo "Missing LaunchDaemon plist: $HELPER_PLIST_SOURCE" >&2
     exit 1
@@ -499,7 +499,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 xattr -cr "$APP"
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   SIGNING_ARGUMENTS=(
     --force
     --options runtime
@@ -510,7 +510,7 @@ else
   SIGNING_ARGUMENTS=(--force --sign -)
 fi
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   /usr/bin/codesign "${SIGNING_ARGUMENTS[@]}" \
     --identifier "$HELPER_LABEL" \
     "$CONTENTS/Helpers/FanControllerAgent"
@@ -543,9 +543,9 @@ for signed_item in \
   "$CONTENTS/MacOS/FanControllerApp" \
   "$APP"; do
   SIGNATURE_INFO="$(/usr/bin/codesign -dvvv "$signed_item" 2>&1)"
-  if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
     if [[ "$SIGNATURE_INFO" == *"Signature=adhoc"* ]]; then
-      echo "Experimental item is ad-hoc signed: $signed_item" >&2
+      echo "Release item is ad-hoc signed: $signed_item" >&2
       exit 1
     fi
     SIGNED_TEAM_IDENTIFIER="$(printf '%s\n' "$SIGNATURE_INFO" \
@@ -575,7 +575,7 @@ for signed_item in \
   fi
 done
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   EMBEDDED_PLIST="$CONTENTS/Library/LaunchDaemons/$HELPER_PLIST_NAME"
   /usr/bin/plutil -lint "$EMBEDDED_PLIST" >/dev/null
 
@@ -613,7 +613,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   fi
 fi
 
-if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   LOCK_DEADLINE=$((SECONDS + APP_LOCK_WAIT_SECONDS))
   while ! /usr/bin/shlock -p "$$" -f "$APP_LOCK_FILE" 2>/dev/null; do
     if [[ "$SECONDS" -ge "$LOCK_DEADLINE" ]]; then
