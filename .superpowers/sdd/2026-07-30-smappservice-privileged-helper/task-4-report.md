@@ -77,3 +77,85 @@ Build of product 'FanControllerApp' complete! (2.98s)
 ## Commit
 
 This report is committed with the Task 4 source and test changes.
+
+## Fix Round 1/5: Stale Mode Request Ordering
+
+### Finding
+
+An older asynchronous Curve or Manual readiness request could complete after a
+newer mode selection and overwrite the user's latest safe System choice or
+newer custom mode. An old failure could also replace a newer status.
+
+### TDD RED
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+First result: test compilation failed because Swift 6 disallows
+`DispatchSemaphore.wait` directly from an asynchronous context. The test helper
+was corrected to perform the bounded wait on a synchronous Dispatch queue and
+resume through a continuation.
+
+The same command was run again.
+
+Behavioral RED result:
+
+```text
+Executed 22 tests, with 5 failures (0 unexpected).
+```
+
+The three new regression scenarios failed as expected:
+
+- An in-flight Curve readiness completion changed newer System state to Curve
+  and connected.
+- Out-of-order repeated Curve/Manual readiness left Curve active instead of
+  the latest Manual request.
+- A stale rejected readiness response changed newer System state to failed and
+  replaced its diagnostic status.
+
+### Implementation
+
+- Added a monotonically increasing mode-request generation to `AppModel`.
+- Bound pending privileged modes and explicit confirmations to their generation.
+- Checked request freshness after service registration, XPC status readiness,
+  coordinator updates, fan application, and error completion.
+- Prevented stale readiness from attaching a coordinator, starting heartbeat,
+  clearing pending state, applying a mode, or publishing failure.
+- Restarted heartbeat with the generation of the latest successfully applied
+  custom mode.
+- Kept explicit confirmation and the default no-`osascript` path unchanged.
+
+### Focused Tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Final result:
+
+```text
+Executed 22 tests, with 0 failures (0 unexpected).
+Test Suite 'Selected tests' passed.
+```
+
+### Release Build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete! (2.88s)
+```

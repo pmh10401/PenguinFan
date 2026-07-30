@@ -17,8 +17,11 @@ final class AppModel: ObservableObject {
     @Published var pendingPrivilegedMode: ControlMode?
     @Published var isPrivilegedApprovalPresented = false
     var modeRequestHandler: ((ControlMode) -> Void)?
-    var privilegedApprovalHandler: (() async -> Void)?
+    var modeRequestGenerationHandler: ((ControlMode, UInt64) -> Void)?
+    var privilegedApprovalHandler: ((UInt64) async -> Void)?
     var privilegedApprovalSettingsHandler: (() -> Void)?
+    private(set) var modeRequestGeneration: UInt64 = 0
+    private var pendingPrivilegedGeneration: UInt64?
 
     init(settings: FanSettings = .safeDefaults) {
         self.settings = settings
@@ -64,10 +67,14 @@ final class AppModel: ObservableObject {
     }
 
     func selectMode(_ mode: ControlMode) {
+        modeRequestGeneration &+= 1
+        let generation = modeRequestGeneration
+
         if mode != .systemAuto,
            privilegedServiceState != .enabled {
             settings.mode = .systemAuto
             pendingPrivilegedMode = mode
+            pendingPrivilegedGeneration = generation
             isPrivilegedApprovalPresented = true
             controlStatus = .authorizing
             diagnosticMessage =
@@ -76,6 +83,7 @@ final class AppModel: ObservableObject {
         }
 
         pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
         isPrivilegedApprovalPresented = false
         settings.mode = mode
         if mode == .systemAuto {
@@ -87,14 +95,20 @@ final class AppModel: ObservableObject {
                 : "관리자 제어 연결 후 적용됩니다."
         }
         modeRequestHandler?(mode)
+        modeRequestGenerationHandler?(mode, generation)
     }
 
     func confirmPrivilegedApproval() async {
-        await privilegedApprovalHandler?()
+        guard let pendingPrivilegedGeneration else {
+            return
+        }
+        await privilegedApprovalHandler?(pendingPrivilegedGeneration)
     }
 
     func cancelPrivilegedApproval() {
+        modeRequestGeneration &+= 1
         pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
         isPrivilegedApprovalPresented = false
         settings.mode = .systemAuto
         controlStatus = .systemAuto
@@ -106,11 +120,17 @@ final class AppModel: ObservableObject {
         privilegedApprovalSettingsHandler?()
     }
 
-    func applyPendingPrivilegedMode() -> ControlMode? {
-        guard let pendingPrivilegedMode else {
+    func applyPendingPrivilegedMode(
+        generation: UInt64
+    ) -> ControlMode? {
+        guard isCurrentModeRequest(generation),
+              pendingPrivilegedGeneration == generation,
+              let pendingPrivilegedMode
+        else {
             return nil
         }
         self.pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
         isPrivilegedApprovalPresented = false
         settings.mode = pendingPrivilegedMode
         return pendingPrivilegedMode
@@ -122,10 +142,22 @@ final class AppModel: ObservableObject {
 
     func markSystemAuto() {
         pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
         isPrivilegedApprovalPresented = false
         settings.mode = .systemAuto
         controlStatus = .systemAuto
         diagnosticMessage = nil
+    }
+
+    func markSystemAuto(ifCurrent generation: UInt64) {
+        guard isCurrentModeRequest(generation) else {
+            return
+        }
+        markSystemAuto()
+    }
+
+    func isCurrentModeRequest(_ generation: UInt64) -> Bool {
+        modeRequestGeneration == generation
     }
 
     func updateCurvePoint(

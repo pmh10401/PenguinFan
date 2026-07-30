@@ -48,17 +48,28 @@ final class RuntimeController: ObservableObject {
         self.model = model
         serviceManager.refreshStatus()
         model.privilegedServiceState = serviceManager.state
-        model.modeRequestHandler = { [weak self, weak model] mode in
+        model.modeRequestGenerationHandler = {
+            [weak self, weak model] mode, generation in
             guard let self, let model else {
                 return
             }
-            Task { await self.request(mode: mode, model: model) }
+            Task {
+                await self.request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
+            }
         }
-        model.privilegedApprovalHandler = { [weak self, weak model] in
+        model.privilegedApprovalHandler = {
+            [weak self, weak model] generation in
             guard let self, let model else {
                 return
             }
-            await self.confirmPrivilegedControl(model: model)
+            await self.confirmPrivilegedControl(
+                generation: generation,
+                model: model
+            )
         }
         model.privilegedApprovalSettingsHandler = {
             [weak self] in
@@ -116,37 +127,74 @@ final class RuntimeController: ObservableObject {
 
     private func request(
         mode: ControlMode,
+        generation: UInt64,
         model: AppModel
     ) async {
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
+
         if mode == .systemAuto {
             if let coordinator {
                 do {
                     try await coordinator.restoreSystemAuto()
-                    model.markSystemAuto()
+                    model.markSystemAuto(ifCurrent: generation)
                 } catch {
-                    await failControl(error, model: model)
+                    await failControl(
+                        error,
+                        generation: generation,
+                        model: model
+                    )
                 }
             } else {
-                model.markSystemAuto()
+                model.markSystemAuto(ifCurrent: generation)
             }
             return
         }
 
         do {
-            let coordinator = try await ensureCoordinator(model: model)
+            let coordinator = try await ensureCoordinator(
+                generation: generation,
+                model: model
+            )
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
             await coordinator.update(settings: model.settings)
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
             if let snapshot = model.snapshot {
                 try await coordinator.apply(snapshot: snapshot)
             }
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
+            startHeartbeat(
+                coordinator: coordinator,
+                generation: generation,
+                model: model
+            )
             model.controlStatus = mode == .curve ? .curve : .manual
             model.diagnosticMessage = nil
+        } catch is StaleModeRequestError {
+            return
         } catch {
-            await failControl(error, model: model)
+            await failControl(
+                error,
+                generation: generation,
+                model: model
+            )
         }
     }
 
-    private func confirmPrivilegedControl(model: AppModel) async {
-        guard model.pendingPrivilegedMode != nil else {
+    private func confirmPrivilegedControl(
+        generation: UInt64,
+        model: AppModel
+    ) async {
+        guard model.isCurrentModeRequest(generation),
+              model.pendingPrivilegedMode != nil
+        else {
             return
         }
 
@@ -154,15 +202,27 @@ final class RuntimeController: ObservableObject {
         if serviceManager.state == .notRegistered {
             serviceManager.register()
         }
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
         model.privilegedServiceState = serviceManager.state
 
         switch serviceManager.state {
         case .enabled:
-            guard let mode = model.applyPendingPrivilegedMode() else {
+            guard let mode = model.applyPendingPrivilegedMode(
+                generation: generation
+            ) else {
                 return
             }
-            await request(mode: mode, model: model)
+            await request(
+                mode: mode,
+                generation: generation,
+                model: model
+            )
         case .requiresApproval:
+            guard model.isCurrentModeRequest(generation) else {
+                return
+            }
             model.settings.mode = .systemAuto
             model.controlStatus = .authorizing
             model.isPrivilegedApprovalPresented = true
@@ -170,32 +230,54 @@ final class RuntimeController: ObservableObject {
                 "시스템 설정의 로그인 항목에서 PenguinFan 권한 서비스를 승인한 뒤 계속을 다시 선택하세요."
         case .failed(let message):
             if legacyFallbackEnabled(),
-               let mode = model.applyPendingPrivilegedMode() {
-                await request(mode: mode, model: model)
+               let mode = model.applyPendingPrivilegedMode(
+                   generation: generation
+               ) {
+                await request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
             } else {
-                await failPendingApproval(message, model: model)
+                await failPendingApproval(
+                    message,
+                    generation: generation,
+                    model: model
+                )
             }
         case .notFound:
             if legacyFallbackEnabled(),
-               let mode = model.applyPendingPrivilegedMode() {
-                await request(mode: mode, model: model)
+               let mode = model.applyPendingPrivilegedMode(
+                   generation: generation
+               ) {
+                await request(
+                    mode: mode,
+                    generation: generation,
+                    model: model
+                )
             } else {
                 await failPendingApproval(
                     "앱에 실험적 권한 서비스가 포함되어 있지 않습니다.",
+                    generation: generation,
                     model: model
                 )
             }
         case .notRegistered, .registering:
             await failPendingApproval(
                 "권한 서비스 등록이 완료되지 않았습니다.",
+                generation: generation,
                 model: model
             )
         }
     }
 
     private func ensureCoordinator(
+        generation: UInt64,
         model: AppModel
     ) async throws -> ControlCoordinator {
+        guard model.isCurrentModeRequest(generation) else {
+            throw StaleModeRequestError()
+        }
         if let coordinator {
             return coordinator
         }
@@ -223,15 +305,18 @@ final class RuntimeController: ObservableObject {
             fans: fans
         )
         _ = try await coordinator.status()
+        guard model.isCurrentModeRequest(generation) else {
+            throw StaleModeRequestError()
+        }
         self.coordinator = coordinator
         terminationBox.set(coordinator)
         model.ipcConnected = true
-        startHeartbeat(coordinator: coordinator, model: model)
         return coordinator
     }
 
     private func startHeartbeat(
         coordinator: ControlCoordinator,
+        generation: UInt64,
         model: AppModel
     ) {
         heartbeatTask?.cancel()
@@ -244,7 +329,11 @@ final class RuntimeController: ObservableObject {
                     guard let self, let model else {
                         return
                     }
-                    await self.failControl(error, model: model)
+                    await self.failControl(
+                        error,
+                        generation: generation,
+                        model: model
+                    )
                     return
                 }
             }
@@ -265,7 +354,11 @@ final class RuntimeController: ObservableObject {
             await coordinator.update(settings: model.settings)
             try await coordinator.apply(snapshot: snapshot)
         } catch {
-            await failControl(error, model: model)
+            await failControl(
+                error,
+                generation: model.modeRequestGeneration,
+                model: model
+            )
         }
     }
 
@@ -276,13 +369,24 @@ final class RuntimeController: ObservableObject {
         else {
             return
         }
-        Task { await failControl(ControlCoordinatorError.missingTemperature, model: model) }
+        let generation = model.modeRequestGeneration
+        Task {
+            await failControl(
+                ControlCoordinatorError.missingTemperature,
+                generation: generation,
+                model: model
+            )
+        }
     }
 
     private func failControl(
         _ error: Error,
+        generation: UInt64,
         model: AppModel
     ) async {
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
         heartbeatTask?.cancel()
         heartbeatTask = nil
         if let coordinator {
@@ -302,12 +406,17 @@ final class RuntimeController: ObservableObject {
 
     private func failPendingApproval(
         _ message: String,
+        generation: UInt64,
         model: AppModel
     ) async {
         await failControl(
             AuthorizationLauncherError.agentFailed(message),
+            generation: generation,
             model: model
         )
+        guard model.isCurrentModeRequest(generation) else {
+            return
+        }
         model.pendingPrivilegedMode = nil
         model.isPrivilegedApprovalPresented = false
     }
@@ -318,6 +427,7 @@ final class RuntimeController: ObservableObject {
         }
         await failControl(
             XPCControlClientError.invalidated,
+            generation: model.modeRequestGeneration,
             model: model
         )
     }
@@ -381,6 +491,8 @@ final class RuntimeController: ObservableObject {
         model?.markSystemAuto()
     }
 }
+
+private struct StaleModeRequestError: Error {}
 
 private final class TerminationCoordinatorBox: @unchecked Sendable {
     private let lock = NSLock()

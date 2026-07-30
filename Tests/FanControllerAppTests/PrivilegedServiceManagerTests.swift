@@ -149,6 +149,140 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertFalse(model.ipcConnected)
     }
 
+    func testSystemSelectionWinsOverInFlightCurveReadiness() async throws {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let connection = FakeXPCConnection(behavior: .hold)
+        let service = FakeServiceRegistration(status: .notRegistered)
+        service.onRegister = { service.status = .enabled }
+        let manager = makeManager(
+            service: service,
+            connectionFactory: { connection }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+        model.selectMode(.curve)
+
+        let confirmation = Task {
+            await model.confirmPrivilegedApproval()
+        }
+        await waitForRequest(connection)
+        model.selectMode(.systemAuto)
+        try connection.replyToHeldRequest(
+            with: .status(
+                AgentStatus(
+                    modelIdentifier: "Mac14,6",
+                    fans: [fan],
+                    manualFanIndices: []
+                )
+            )
+        )
+        await confirmation.value
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
+    func testLatestRepeatedCustomModeWinsWhenReadinessCompletesOutOfOrder()
+        async throws
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let curveConnection = FakeXPCConnection(behavior: .hold)
+        let manualConnection = FakeXPCConnection(behavior: .hold)
+        var connections = [curveConnection, manualConnection]
+        let service = FakeServiceRegistration(status: .enabled)
+        let manager = makeManager(
+            service: service,
+            connectionFactory: { connections.removeFirst() }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+
+        model.selectMode(.curve)
+        await waitForRequest(curveConnection)
+        model.selectMode(.manual)
+        await waitForRequest(manualConnection)
+
+        let status = AgentStatus(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            manualFanIndices: []
+        )
+        try manualConnection.replyToHeldRequest(with: .status(status))
+        await Task.yield()
+        try curveConnection.replyToHeldRequest(with: .status(status))
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(model.settings.mode, .manual)
+        XCTAssertEqual(model.controlStatus, .manual)
+        XCTAssertNil(model.pendingPrivilegedMode)
+        XCTAssertTrue(model.ipcConnected)
+    }
+
+    func testStaleReadinessFailureDoesNotReplaceNewerSystemStatus()
+        async throws
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let connection = FakeXPCConnection(behavior: .hold)
+        let service = FakeServiceRegistration(status: .enabled)
+        let manager = makeManager(
+            service: service,
+            connectionFactory: { connection }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+
+        model.selectMode(.curve)
+        await waitForRequest(connection)
+        model.selectMode(.systemAuto)
+        try connection.replyToHeldRequest(
+            with: .rejected(
+                code: "denied",
+                message: "stale failure"
+            )
+        )
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertNil(model.diagnosticMessage)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
     func testRefreshStatusMapsEveryKnownServiceStatus() {
         let cases: [(SMAppService.Status, PrivilegedServiceState)] = [
             (.notRegistered, .notRegistered),
@@ -473,6 +607,21 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? XPCControlClientError, expectedError)
         }
+    }
+
+    private func waitForRequest(
+        _ connection: FakeXPCConnection
+    ) async {
+        let received = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(
+                    returning: connection.requestReceived.wait(
+                        timeout: .now() + 1
+                    ) == .success
+                )
+            }
+        }
+        XCTAssertTrue(received)
     }
 }
 
