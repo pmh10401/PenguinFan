@@ -67,3 +67,63 @@ Results:
 `/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
 
 Runtime installation and launch are intentionally deferred to Task 7.
+
+## Fix round 1/5: transactional publication and executable artifact tests
+
+### RED evidence
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Before the transactional implementation, the deliberate failure environment was
+ignored, the old script published the final package, and the test failed with:
+
+```text
+FAIL: deliberate pre-publication failure unexpectedly succeeded
+```
+
+### Final focused GREEN run
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh
+```
+
+Result: exit 0 with:
+
+```text
+Injected Task 6 failure before package publication.
+Built installer: /Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+Task 6 executable artifact and failure-path checks passed.
+```
+
+The focused test performed two complete Release app/agent/diagnostics builds.
+The first run placed a stale sentinel at the final distribution path, injected
+exit 75 after all staged validations, and proved both the final package and
+staging directory were absent. The second run rebuilt and validated the app and
+package, then published by same-filesystem rename.
+
+Executable artifact checks covered:
+
+- Info.plist bundle ID, display name, version 1.1.0, and build 14
+- embedded LaunchDaemon path, plist syntax, Label, BundleProgram, ProcessType,
+  and MachServices
+- main and helper executable presence
+- strict helper/main signatures, deep app signature, ad-hoc metadata, and signed
+  app/main identifier
+- complete pkgutil payload allowlist
+- physically expanded payload containing only
+  `Payload/Applications/PenguinFan Experimental.app` and no stable or legacy app
+- trap cleanup after both injected failure and successful publication
+
+No install or launch was performed.
+
+Regenerated artifact:
+
+`/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg`
+
+SHA-256: `4179e830359693c28cdfa01924b06f017736f7341d838e63903cf710a5d473af`

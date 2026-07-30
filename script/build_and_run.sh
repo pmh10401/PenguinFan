@@ -72,7 +72,13 @@ cd "$ROOT"
 BIN_PATH="$(/usr/bin/xcrun swift build \
   -c "$CONFIGURATION" \
   --show-bin-path)"
-APP="$ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
+OUTPUT_ROOT="$ROOT"
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]] \
+  && [[ -n "${FAN_CONTROLLER_OUTPUT_ROOT:-}" ]]; then
+  OUTPUT_ROOT="$FAN_CONTROLLER_OUTPUT_ROOT"
+fi
+
+APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
 CONTENTS="$APP/Contents"
 ICON_SOURCE="$ROOT/Assets/PenguinFanIcon.png"
 HELPER_PLIST_SOURCE="$ROOT/Resources/LaunchDaemons/$HELPER_PLIST_NAME"
