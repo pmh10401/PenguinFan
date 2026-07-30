@@ -76,6 +76,12 @@ validate_signing_identity() {
     | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
   /bin/rm -rf "$probe_dir"
 
+  # Failure-only test injection: this can make a valid identity fail policy,
+  # but cannot make an invalid or wrong-Team identity pass.
+  if [[ "${PENGUINFAN_TASK7_TEST_FORCE_TEAM_MISMATCH:-0}" == "1" ]]; then
+    team_identifier="TASK7-FORCED-MISMATCH"
+  fi
+
   if [[ "$metadata" == *"Signature=adhoc"* ]] \
     || [[ "$authority" != "$identity" ]] \
     || [[ -z "$team_identifier" ]] \
@@ -96,7 +102,7 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   APP_BUNDLE_NAME="PenguinFan Experimental.app"
   PACKAGE_NAME="PenguinFan-Experimental-1.1.0.pkg"
   PACKAGE_IDENTIFIER="com.local.PenguinFan.experimental"
-  OUTPUT_DIR="$ROOT/installer"
+  OUTPUT_DIR="${PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR:-$ROOT/installer}"
   FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
   LOCK_FILE="$OUTPUT_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
   LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"

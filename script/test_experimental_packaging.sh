@@ -2,17 +2,82 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FINAL_PACKAGE="$ROOT/installer/PenguinFan-Experimental-1.1.0.pkg"
-LOCK_FILE="$ROOT/installer/.PenguinFan-Experimental-1.1.0.publication.lock"
+PUBLISHED_PACKAGE="$ROOT/installer/PenguinFan-Experimental-1.1.0.pkg"
+FINAL_PACKAGE=""
+LOCK_FILE=""
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 EXPECTED_BUNDLE_PROGRAM="Contents/Helpers/FanControllerAgent"
 EXPECTED_TEAM_IDENTIFIER="UUUQNVQ67B"
 SIGNING_IDENTITY=""
+TEST_ROOT=""
+TEST_INSTALLER_DIR=""
+PUBLISHED_PACKAGE_EXISTED=0
+PUBLISHED_PACKAGE_SHA=""
 
 fail() {
   printf "FAIL: %s\n" "$1" >&2
   exit 1
+}
+
+file_sha() {
+  /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'
+}
+
+directory_snapshot_sha() {
+  local artifact="$1"
+  local parent
+  local name
+
+  parent="$(/usr/bin/dirname "$artifact")"
+  name="$(/usr/bin/basename "$artifact")"
+  (
+    cd "$parent"
+    COPYFILE_DISABLE=1 /usr/bin/tar -cf - "$name"
+  ) | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+}
+
+validate_signing_identity() {
+  local identity="$1"
+  local expected_team="$2"
+  local probe_dir
+  local probe
+  local metadata
+  local authority
+  local team_identifier
+
+  if [[ -z "$identity" ]] || [[ "$identity" == "-" ]]; then
+    return 1
+  fi
+  if ! /usr/bin/security find-identity -v -p codesigning \
+    | /usr/bin/awk -F'"' -v expected="$identity" \
+      '$2 == expected { found = 1 } END { exit(found ? 0 : 1) }'; then
+    return 1
+  fi
+
+  mkdir -p "$ROOT/.build"
+  probe_dir="$(/usr/bin/mktemp -d \
+    "$ROOT/.build/task7-test-signing-probe.XXXXXX")"
+  probe="$probe_dir/probe"
+  /bin/cp /usr/bin/true "$probe"
+  if ! /usr/bin/codesign --force --options runtime --timestamp=none \
+    --sign "$identity" "$probe" >/dev/null 2>&1 \
+    || ! /usr/bin/codesign --verify --strict "$probe" >/dev/null 2>&1; then
+    /bin/rm -rf "$probe_dir"
+    return 1
+  fi
+
+  metadata="$(/usr/bin/codesign -dvvv "$probe" 2>&1)"
+  authority="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+  team_identifier="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  /bin/rm -rf "$probe_dir"
+
+  [[ "$metadata" != *"Signature=adhoc"* ]] \
+    && [[ "$authority" == "$identity" ]] \
+    && [[ "$team_identifier" == "$expected_team" ]] \
+    && [[ "$metadata" == *"(runtime)"* ]]
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -33,7 +98,51 @@ done
 [[ -n "$SIGNING_IDENTITY" ]] && [[ "$SIGNING_IDENTITY" != "-" ]] \
   || fail "an explicit non-ad-hoc signing identity is required"
 
+validate_signing_identity \
+  "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" \
+  || fail "supplied signing identity failed the real signed Team policy probe"
+
+if [[ -f "$PUBLISHED_PACKAGE" ]]; then
+  PUBLISHED_PACKAGE_EXISTED=1
+  PUBLISHED_PACKAGE_SHA="$(file_sha "$PUBLISHED_PACKAGE")"
+elif [[ -e "$PUBLISHED_PACKAGE" ]]; then
+  fail "published package path is not a regular file"
+fi
+
+cleanup_test_state() {
+  local result=$?
+
+  trap - EXIT INT TERM
+  if [[ -n "$TEST_ROOT" ]]; then
+    /bin/rm -rf "$TEST_ROOT"
+  fi
+
+  if [[ "$PUBLISHED_PACKAGE_EXISTED" -eq 1 ]]; then
+    if [[ ! -f "$PUBLISHED_PACKAGE" ]] \
+      || [[ "$(file_sha "$PUBLISHED_PACKAGE")" != "$PUBLISHED_PACKAGE_SHA" ]]; then
+      printf 'FAIL: published package changed during isolated tests\n' >&2
+      result=1
+    fi
+  elif [[ -e "$PUBLISHED_PACKAGE" ]]; then
+    printf 'FAIL: isolated tests created the published package\n' >&2
+    result=1
+  fi
+  exit "$result"
+}
+
+trap cleanup_test_state EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+TEST_ROOT="$(/usr/bin/mktemp -d \
+  "$ROOT/.build/task7-experimental-packaging.XXXXXX")"
+TEST_INSTALLER_DIR="$TEST_ROOT/installer"
+FINAL_PACKAGE="$TEST_INSTALLER_DIR/PenguinFan-Experimental-1.1.0.pkg"
+LOCK_FILE="$TEST_INSTALLER_DIR/.PenguinFan-Experimental-1.1.0.publication.lock"
+
 BUILD_COMMAND=(
+  /usr/bin/env
+  PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
   "$ROOT/script/build_installer.sh"
   --experimental-helper
   --signing-identity "$SIGNING_IDENTITY"
@@ -63,6 +172,28 @@ verify_identity_signature() {
     || fail "wrong or missing TeamIdentifier: $item"
   [[ "$metadata" == *"(runtime)"* ]] \
     || fail "hardened runtime is missing: $item"
+}
+
+verify_helper_has_no_fallback_surface() {
+  local helper="$1"
+  local inspection
+  local forbidden
+
+  inspection="$(/usr/bin/mktemp \
+    "$TEST_ROOT/helper-executable-inspection.XXXXXX")"
+  forbidden='proc_pidpath|SecStaticCodeCreateWithPath|SecStaticCodeCheckValidity|SecStaticCodeCopySigningInformation|inspectStaticCode|LiveProcessCodeInspectionError|StaticCodeIdentity|acceptsAdHocFallback|validateAdHocFallback|adHocFallback|fallbackRoute|route[=:]fallback'
+
+  if ! /usr/bin/nm "$helper" >"$inspection" 2>&1 \
+    || ! /usr/bin/nm -u "$helper" >>"$inspection" 2>&1 \
+    || ! /usr/bin/strings -a "$helper" >>"$inspection" 2>&1; then
+    /bin/rm -f "$inspection"
+    fail "could not inspect packaged helper executable symbols and strings"
+  fi
+  if /usr/bin/grep -Eiq "$forbidden" "$inspection"; then
+    /bin/rm -f "$inspection"
+    fail "packaged helper executable contains a rejected fallback surface"
+  fi
+  /bin/rm -f "$inspection"
 }
 
 verify_app() {
@@ -98,6 +229,7 @@ verify_app() {
   [[ -x "$app/$EXPECTED_BUNDLE_PROGRAM" ]] \
     || fail "helper executable is missing"
 
+  verify_helper_has_no_fallback_surface "$app/$EXPECTED_BUNDLE_PROGRAM"
   verify_identity_signature "$app/$EXPECTED_BUNDLE_PROGRAM"
   verify_identity_signature "$contents/MacOS/FanControllerApp"
   /usr/bin/codesign --verify --deep --strict "$app"
@@ -139,7 +271,7 @@ verify_package() {
   fi
 
   expanded_parent="$(/usr/bin/mktemp -d \
-    "$ROOT/.build/task6-expanded-package.XXXXXX")"
+    "$TEST_ROOT/expanded-package.XXXXXX")"
   expanded="$expanded_parent/expanded"
   /usr/sbin/pkgutil --expand-full "$package" "$expanded"
 
@@ -155,7 +287,7 @@ verify_package() {
 }
 
 assert_no_staging_directories() {
-  if /usr/bin/find "$ROOT/installer" -maxdepth 1 -type d \
+  if /usr/bin/find "$TEST_INSTALLER_DIR" -maxdepth 1 -type d \
     -name ".PenguinFan-Experimental-1.1.0.staging.*" \
     -print -quit | /usr/bin/grep -q .; then
     fail "experimental staging directory was not cleaned"
@@ -185,11 +317,20 @@ wait_for_published_package() {
   fail "timed out waiting for published package"
 }
 
-mkdir -p "$ROOT/installer"
+assert_no_app_staging_directories() {
+  local output_root="$1"
+  if /usr/bin/find "$output_root" -maxdepth 1 -type d \
+    -name ".PenguinFan-Experimental-1.1.0.app-staging.*" \
+    -print -quit | /usr/bin/grep -q .; then
+    fail "experimental app staging directory was not cleaned"
+  fi
+}
+
+mkdir -p "$TEST_INSTALLER_DIR"
 
 # The rejected PID/static-code fallback must not remain in the source.
 if /usr/bin/grep -Eq \
-  'proc_pidpath|SecStaticCodeCreateWithPath|inspectStaticCode|LiveProcessCodeInspectionError|StaticCodeIdentity|acceptsAdHocFallback|route=fallback' \
+  'proc_pidpath|SecStaticCodeCreateWithPath|SecStaticCodeCheckValidity|SecStaticCodeCopySigningInformation|inspectStaticCode|LiveProcessCodeInspectionError|StaticCodeIdentity|acceptsAdHocFallback|validateAdHocFallback|adHocFallback|fallbackRoute|route[=:]fallback' \
   "$ROOT/Sources/FanControllerAgent/XPCClientValidator.swift"; then
   fail "unsafe XPC client fallback symbols remain"
 fi
@@ -197,8 +338,11 @@ fi
 # Missing, ad-hoc, and unavailable identities must fail before the final
 # artifact can be deleted or replaced.
 printf "identity gate sentinel\n" > "$FINAL_PACKAGE"
+IDENTITY_GATE_SHA="$(file_sha "$FINAL_PACKAGE")"
 for invalid_identity in "" "-" "Missing Signing Identity"; do
   INVALID_COMMAND=(
+    /usr/bin/env
+    PENGUINFAN_EXPERIMENTAL_OUTPUT_DIR="$TEST_INSTALLER_DIR"
     "$ROOT/script/build_installer.sh"
     --experimental-helper
   )
@@ -208,10 +352,90 @@ for invalid_identity in "" "-" "Missing Signing Identity"; do
   if "${INVALID_COMMAND[@]}"; then
     fail "invalid signing identity unexpectedly succeeded"
   fi
-  [[ "$(/bin/cat "$FINAL_PACKAGE")" == "identity gate sentinel" ]] \
+  [[ -f "$FINAL_PACKAGE" ]] \
+    && [[ "$(file_sha "$FINAL_PACKAGE")" == "$IDENTITY_GATE_SHA" ]] \
     || fail "invalid signing identity changed the final artifact"
 done
+
+if PENGUINFAN_TASK7_TEST_FORCE_TEAM_MISMATCH=1 \
+  "${BUILD_COMMAND[@]}"; then
+  fail "wrong-Team signing identity unexpectedly succeeded"
+fi
+[[ -f "$FINAL_PACKAGE" ]] \
+  && [[ "$(file_sha "$FINAL_PACKAGE")" == "$IDENTITY_GATE_SHA" ]] \
+  || fail "wrong-Team identity changed the final artifact"
 /bin/rm -f "$FINAL_PACKAGE"
+
+# Direct Experimental app builds must gate identity before touching an existing
+# app and must restore the complete prior directory on publication failure.
+DIRECT_OUTPUT_ROOT="$TEST_ROOT/direct-app-output"
+DIRECT_APP="$DIRECT_OUTPUT_ROOT/dist-1.1.0/PenguinFan Experimental.app"
+mkdir -p "$DIRECT_APP/Contents/Resources"
+printf "direct app sentinel\n" \
+  > "$DIRECT_APP/Contents/Resources/transaction-sentinel.txt"
+DIRECT_SENTINEL_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
+
+for invalid_identity in "" "-" "Missing Signing Identity"; do
+  INVALID_DIRECT_COMMAND=(
+    /usr/bin/env
+    FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
+    "$ROOT/script/build_and_run.sh"
+    --experimental-helper
+    --verify
+  )
+  if [[ -n "$invalid_identity" ]]; then
+    INVALID_DIRECT_COMMAND+=(--signing-identity "$invalid_identity")
+  fi
+  if "${INVALID_DIRECT_COMMAND[@]}"; then
+    fail "direct app build accepted an invalid signing identity"
+  fi
+  [[ -d "$DIRECT_APP" ]] \
+    && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == \
+      "$DIRECT_SENTINEL_SHA" ]] \
+    || fail "invalid identity changed the existing direct app artifact"
+done
+
+DIRECT_BUILD_COMMAND=(
+  /usr/bin/env
+  FAN_CONTROLLER_OUTPUT_ROOT="$DIRECT_OUTPUT_ROOT"
+  "$ROOT/script/build_and_run.sh"
+  --experimental-helper
+  --signing-identity "$SIGNING_IDENTITY"
+  --verify
+)
+
+if PENGUINFAN_TASK7_TEST_FORCE_TEAM_MISMATCH=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  fail "direct app build accepted a wrong-Team identity"
+fi
+[[ -d "$DIRECT_APP" ]] \
+  && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == \
+    "$DIRECT_SENTINEL_SHA" ]] \
+  || fail "wrong-Team identity changed the existing direct app artifact"
+
+if PENGUINFAN_TASK7_FAIL_BEFORE_APP_PUBLISH=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  fail "direct app pre-publication failure unexpectedly succeeded"
+fi
+[[ -d "$DIRECT_APP" ]] \
+  && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == \
+    "$DIRECT_SENTINEL_SHA" ]] \
+  || fail "pre-publication failure changed the existing direct app artifact"
+assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
+
+"${DIRECT_BUILD_COMMAND[@]}"
+verify_app "$DIRECT_APP"
+DIRECT_VALID_SHA="$(directory_snapshot_sha "$DIRECT_APP")"
+
+if PENGUINFAN_TASK7_SIGNAL_AFTER_APP_BACKUP_MOVE=1 \
+  "${DIRECT_BUILD_COMMAND[@]}"; then
+  fail "direct app post-backup signal injection unexpectedly succeeded"
+fi
+[[ -d "$DIRECT_APP" ]] \
+  && [[ "$(directory_snapshot_sha "$DIRECT_APP")" == "$DIRECT_VALID_SHA" ]] \
+  || fail "post-backup signal did not restore the complete direct app"
+verify_app "$DIRECT_APP"
+assert_no_app_staging_directories "$DIRECT_OUTPUT_ROOT"
 
 # A live lock owner protects the existing final artifact. A non-owner must
 # time out without deleting or replacing it.
@@ -244,8 +468,8 @@ assert_no_staging_directories
 
 # A publishes successfully while B waits and then fails. B must restore A's
 # validated package rather than removing it.
-A_LOG="$ROOT/.build/task6-concurrency-a.log"
-B_LOG="$ROOT/.build/task6-concurrency-b.log"
+A_LOG="$TEST_ROOT/concurrency-a.log"
+B_LOG="$TEST_ROOT/concurrency-b.log"
 PENGUINFAN_TASK6_HOLD_AFTER_PUBLISH_SECONDS=2 \
   "${BUILD_COMMAND[@]}" \
   >"$A_LOG" 2>&1 &
@@ -305,8 +529,8 @@ verify_package "$FINAL_PACKAGE"
 
 # Two successful simultaneous attempts must serialize. D remains waiting while
 # C owns the lock; afterward the final package must be one complete artifact.
-C_LOG="$ROOT/.build/task6-concurrency-c.log"
-D_LOG="$ROOT/.build/task6-concurrency-d.log"
+C_LOG="$TEST_ROOT/concurrency-c.log"
+D_LOG="$TEST_ROOT/concurrency-d.log"
 PENGUINFAN_TASK6_HOLD_LOCK_SECONDS=2 \
   "${BUILD_COMMAND[@]}" \
   >"$C_LOG" 2>&1 &

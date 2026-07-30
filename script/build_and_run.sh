@@ -17,6 +17,63 @@ APP_BUNDLE_NAME="PenguinFan.app"
 HELPER_LABEL="com.local.PenguinFan.experimental.agent"
 HELPER_PLIST_NAME="$HELPER_LABEL.plist"
 
+validate_signing_identity() {
+  local identity="$1"
+  local expected_team="$2"
+  local probe_dir
+  local probe
+  local metadata
+  local authority
+  local team_identifier
+
+  if [[ -z "$identity" ]] || [[ "$identity" == "-" ]]; then
+    echo "Experimental builds require an explicit non-ad-hoc signing identity." >&2
+    return 1
+  fi
+  if ! /usr/bin/security find-identity -v -p codesigning \
+    | /usr/bin/awk -F'"' -v expected="$identity" \
+      '$2 == expected { found = 1 } END { exit(found ? 0 : 1) }'; then
+    printf 'Signing identity is unavailable or invalid: %s\n' "$identity" >&2
+    return 1
+  fi
+
+  mkdir -p "$ROOT/.build"
+  probe_dir="$(/usr/bin/mktemp -d \
+    "$ROOT/.build/experimental-app-signing-probe.XXXXXX")"
+  probe="$probe_dir/probe"
+  /bin/cp /usr/bin/true "$probe"
+  if ! /usr/bin/codesign --force --options runtime --timestamp=none \
+    --sign "$identity" "$probe" >/dev/null 2>&1 \
+    || ! /usr/bin/codesign --verify --strict "$probe" >/dev/null 2>&1; then
+    /bin/rm -rf "$probe_dir"
+    printf 'Signing identity failed a signed probe: %s\n' "$identity" >&2
+    return 1
+  fi
+
+  metadata="$(/usr/bin/codesign -dvvv "$probe" 2>&1)"
+  authority="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^Authority=/{sub(/^Authority=/, ""); print; exit}')"
+  team_identifier="$(printf '%s\n' "$metadata" \
+    | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+  /bin/rm -rf "$probe_dir"
+
+  # Failure-only test injection: this can make a valid identity fail policy,
+  # but cannot make an invalid or wrong-Team identity pass.
+  if [[ "${PENGUINFAN_TASK7_TEST_FORCE_TEAM_MISMATCH:-0}" == "1" ]]; then
+    team_identifier="TASK7-FORCED-MISMATCH"
+  fi
+
+  if [[ "$metadata" == *"Signature=adhoc"* ]] \
+    || [[ "$authority" != "$identity" ]] \
+    || [[ -z "$team_identifier" ]] \
+    || [[ "$team_identifier" != "$expected_team" ]] \
+    || [[ "$metadata" != *"(runtime)"* ]]; then
+    printf 'Signing identity metadata did not match the experimental policy: %s\n' \
+      "$identity" >&2
+    return 1
+  fi
+}
+
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     run)
@@ -61,6 +118,8 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
   BUILD_NUMBER="14"
   APP_DISPLAY_NAME="PenguinFan Experimental"
   APP_BUNDLE_NAME="PenguinFan Experimental.app"
+  validate_signing_identity \
+    "$SIGNING_IDENTITY" "$EXPECTED_TEAM_IDENTIFIER" || exit 64
 elif [[ -n "$SIGNING_IDENTITY" ]]; then
   echo "--signing-identity is supported only with --experimental-helper." >&2
   exit 64
@@ -94,7 +153,48 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]] \
   OUTPUT_ROOT="$FAN_CONTROLLER_OUTPUT_ROOT"
 fi
 
-APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
+APP_STAGING_ROOT=""
+FINAL_APP=""
+APP_BACKUP=""
+APP_PUBLICATION_ACTIVE=0
+PRIOR_APP_PRESENT=0
+APP_PUBLISHED=0
+
+cleanup_experimental_app_publication() {
+  local result=$?
+
+  trap - EXIT INT TERM
+  if [[ "$APP_PUBLICATION_ACTIVE" -eq 1 ]] \
+    && [[ "$APP_PUBLISHED" -ne 1 ]]; then
+    if [[ "$PRIOR_APP_PRESENT" -eq 1 ]]; then
+      if [[ -e "$APP_BACKUP" ]] || [[ -L "$APP_BACKUP" ]]; then
+        /bin/rm -rf "$FINAL_APP"
+        /bin/mv "$APP_BACKUP" "$FINAL_APP"
+      fi
+    else
+      /bin/rm -rf "$FINAL_APP"
+    fi
+  fi
+  if [[ -n "$APP_STAGING_ROOT" ]]; then
+    /bin/rm -rf "$APP_STAGING_ROOT"
+  fi
+  exit "$result"
+}
+
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  mkdir -p "$OUTPUT_ROOT"
+  FINAL_APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
+  APP_STAGING_ROOT="$(/usr/bin/mktemp -d \
+    "$OUTPUT_ROOT/.PenguinFan-Experimental-1.1.0.app-staging.XXXXXX")"
+  APP_BACKUP="$APP_STAGING_ROOT/prior-app"
+  APP="$APP_STAGING_ROOT/$APP_BUNDLE_NAME"
+  trap cleanup_experimental_app_publication EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+else
+  APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
+fi
+
 CONTENTS="$APP/Contents"
 ICON_SOURCE="$ROOT/Assets/PenguinFanIcon.png"
 HELPER_PLIST_SOURCE="$ROOT/Resources/LaunchDaemons/$HELPER_PLIST_NAME"
@@ -263,6 +363,32 @@ if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
     echo "LaunchDaemon MachServices verification failed." >&2
     exit 1
   fi
+fi
+
+if [[ "$EXPERIMENTAL_HELPER" -eq 1 ]]; then
+  if [[ "${PENGUINFAN_TASK7_FAIL_BEFORE_APP_PUBLISH:-0}" == "1" ]]; then
+    echo "Injected Task 7 failure before app publication." >&2
+    exit 75
+  fi
+
+  mkdir -p "$(/usr/bin/dirname "$FINAL_APP")"
+  APP_PUBLICATION_ACTIVE=1
+  if [[ -e "$FINAL_APP" ]] || [[ -L "$FINAL_APP" ]]; then
+    PRIOR_APP_PRESENT=1
+    /bin/mv "$FINAL_APP" "$APP_BACKUP"
+  fi
+
+  if [[ "${PENGUINFAN_TASK7_SIGNAL_AFTER_APP_BACKUP_MOVE:-0}" == "1" ]]; then
+    /bin/kill -TERM "$$"
+  fi
+
+  /bin/mv "$APP" "$FINAL_APP"
+  APP_PUBLISHED=1
+  APP="$FINAL_APP"
+  CONTENTS="$APP/Contents"
+  /bin/rm -rf "$APP_STAGING_ROOT"
+  APP_STAGING_ROOT=""
+  trap - EXIT INT TERM
 fi
 
 printf 'Built: %s\n' "$APP"

@@ -1036,3 +1036,201 @@ identity from this Mac's keychain. It is not Developer ID signed, installer
 signed, notarized, or suitable for public distribution. Rebuilding requires
 the same valid local identity and exact TeamIdentifier policy. The artifact
 remains Experimental-only and was not installed.
+
+---
+
+## Security repair round 5/5: transactional app publication and executable proof
+
+Validation date: 2026-07-30 KST.
+
+All three round-4 Important findings were repaired. Destructive package
+transaction tests now run under a unique temporary Experimental output root
+after the supplied identity passes a real signed probe. The published package
+is snapshotted before the test and checked again from the EXIT/INT/TERM cleanup
+path. Direct Experimental app builds perform the same non-ad-hoc signed probe
+and exact TeamIdentifier gate before app-path mutation, build and sign in a
+sibling staging directory, and restore the complete prior app directory if
+publication fails or receives TERM after the backup move.
+
+The package test now runs `nm`, `nm -u`, and `strings -a` against the actual
+`FanControllerAgent` executable extracted from the package. It rejects
+`proc_pidpath`, path-created `SecStaticCode` APIs, and the removed fallback
+routes, types, functions, or strings. The source guard remains as defense in
+depth.
+
+No app or package was installed. The stable app, stable package/release assets,
+marketing files, and unrelated untracked files were not modified.
+
+### Signing identity and Team gate
+
+Command:
+
+```bash
+/usr/bin/security find-identity -v -p codesigning
+```
+
+Result:
+
+```text
+D10DD321B33EAB9C02DB2BEB29E077986032B04E
+Apple Development: pmh10401@gmail.com (33KJJV566T)
+1 valid identities found
+```
+
+The identity probe used by the test, direct app builder, and installer signed
+`/usr/bin/true` with hardened runtime and `--timestamp=none`, verified it with
+`codesign --strict`, and required:
+
+```text
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+CodeDirectory flags include runtime
+Signature=adhoc absent
+```
+
+Only one code-signing identity was available. The wrong-Team preservation
+branch was therefore exercised with a failure-only test hook that replaces the
+observed Team value with a fixed mismatch after a genuine successful signed
+probe. The hook can only force rejection; it cannot make any identity pass.
+
+### Static checks, validator suites, and release builds
+
+Commands:
+
+```bash
+/usr/bin/env bash -n \
+  script/build_and_run.sh \
+  script/build_installer.sh \
+  script/validate_experimental_package.sh \
+  script/test_experimental_packaging.sh
+git diff --check
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test \
+  --filter 'AgentServerTests/testXPCClientValidator'
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerAgent
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Results:
+
+```text
+Shell syntax validation: exit 0
+git diff --check: exit 0
+Selected AgentServerTests: 7 tests, 0 failures
+All tests: 101 tests, 0 failures
+Build of product 'FanControllerAgent' complete
+Build of product 'FanControllerApp' complete
+```
+
+### Isolated transaction and executable-artifact test
+
+Command:
+
+```bash
+./script/test_experimental_packaging.sh \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+```
+
+The first preflight invocation stopped before any artifact mutation because an
+initial defense-in-depth regex rejected the benign live-guest declaration
+`var staticCode: SecStaticCode?`:
+
+```text
+FAIL: unsafe XPC client fallback symbols remain
+```
+
+The guard was narrowed to the rejected path-created APIs
+(`SecStaticCodeCreateWithPath`, `SecStaticCodeCheckValidity`, and
+`SecStaticCodeCopySigningInformation`) while retaining the actual executable
+import/symbol/string scan. The complete rerun result was:
+
+```text
+Task 7 identity-gated transactional and artifact checks passed.
+TEST_EXIT=0
+```
+
+The passing assertions covered:
+
+- missing, ad-hoc, unavailable, and forced wrong-Team package identities
+  preserving the isolated pre-existing package byte-for-byte;
+- the same direct-app identity failures preserving the complete prior app
+  directory with an inode-independent tar snapshot;
+- direct-app failure before publication and TERM immediately after the prior
+  app backup move restoring the exact directory snapshot;
+- direct-app helper-then-app signing, strict/deep validation, hardened runtime,
+  Authority, and Team metadata;
+- `nm`, undefined-import `nm -u`, and `strings -a` inspection of the actual
+  helper extracted from each verified package;
+- live-lock, stale-lock, pre-publication failure, concurrent publication, and
+  signal-injection package rollback;
+- absence of stable or legacy app payload paths and cleanup of all temporary
+  app/package staging directories.
+
+The real published package remained byte-identical throughout the isolated
+test:
+
+```text
+SHA-256 before test:
+2ef6fe24862ac6ae8d9bce8fb18326a3d873afe2d9bc958c12a351ee53262375
+SHA-256 after test:
+2ef6fe24862ac6ae8d9bce8fb18326a3d873afe2d9bc958c12a351ee53262375
+```
+
+### Final transactional package regeneration
+
+Commands:
+
+```bash
+./script/build_installer.sh \
+  --experimental-helper \
+  --signing-identity \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)'
+./script/validate_experimental_package.sh \
+  installer/PenguinFan-Experimental-1.1.0.pkg \
+  'Apple Development: pmh10401@gmail.com (33KJJV566T)' \
+  UUUQNVQ67B
+/usr/bin/shasum -a 256 \
+  installer/PenguinFan-Experimental-1.1.0.pkg
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete
+Build of product 'FanControllerAgent' complete
+Build of product 'FanDiagnostics' complete
+Validated experimental package: staging package
+Built installer: installer/PenguinFan-Experimental-1.1.0.pkg
+Validated experimental package: installer/PenguinFan-Experimental-1.1.0.pkg
+7a9b03f7b27dcebed91e51db34470a219364dfc3522c2ef62f4b6d748bcabc7f
+```
+
+The exact helper expanded from the published package reported:
+
+```text
+CodeDirectory flags=0x10000(runtime)
+Authority=Apple Development: pmh10401@gmail.com (33KJJV566T)
+TeamIdentifier=UUUQNVQ67B
+FINAL_HELPER_FALLBACK_SURFACE=absent
+```
+
+Artifact:
+
+```text
+/Users/mac/Documents/Man fan controler/.worktrees/native-fan-controller/installer/PenguinFan-Experimental-1.1.0.pkg
+SHA-256: 7a9b03f7b27dcebed91e51db34470a219364dfc3522c2ef62f4b6d748bcabc7f
+```
+
+### Local-only limitation
+
+The package contains code signed by this Mac's local Apple Development Personal
+Team identity. The installer package itself is unsigned, the product is not
+Developer ID signed or notarized, and it is not suitable for public
+distribution. Rebuilding requires the same usable local identity and exact
+`UUUQNVQ67B` Team policy. The artifact remains Experimental-only and was not
+installed.
