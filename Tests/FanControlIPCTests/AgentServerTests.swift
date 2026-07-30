@@ -61,6 +61,41 @@ final class AgentServerTests: XCTestCase {
         )
     }
 
+    func testXPCServiceRejectsOversizedInputBeforeDecode() throws {
+        XCTAssertEqual(
+            AgentXPCService.maximumRequestSize,
+            ControlProtocolCodec.maximumMessageSize
+        )
+        let service = AgentXPCService(
+            server: AgentServer(
+                writer: RecordingFanWriter(),
+                capabilities: capabilities(),
+                clock: { 100 }
+            )
+        )
+        var replyData: Data?
+
+        service.handle(
+            Data(
+                repeating: 0x20,
+                count: AgentXPCService.maximumRequestSize + 1
+            )
+        ) {
+            replyData = $0
+        }
+
+        let response = try XPCMessageAdapter.decodeResponse(
+            XCTUnwrap(replyData)
+        )
+        XCTAssertEqual(
+            response.result,
+            .rejected(
+                code: "malformed_request",
+                message: "The XPC request could not be decoded."
+            )
+        )
+    }
+
     func testXPCClientValidatorRequiresExactClientIdentity() {
         let connection = NSXPCConnection(serviceName: "test.invalid")
         defer { connection.invalidate() }
@@ -76,6 +111,9 @@ final class AgentServerTests: XCTestCase {
         XCTAssertFalse(
             makeValidator(signingIdentifier: "com.local.Other").accepts(connection)
         )
+        XCTAssertFalse(
+            makeValidator(filesystemObjectsSecure: false).accepts(connection)
+        )
     }
 
     func testXPCClientValidatorRejectsInspectionErrors() {
@@ -84,10 +122,13 @@ final class AgentServerTests: XCTestCase {
         let validator = XPCClientValidator(
             securityIdentity: { _ in throw ValidationTestError.failed },
             consoleUserUID: { 501 },
-            executablePath: { _ in XPCClientValidator.requiredExecutablePath },
-            signingIdentifier: { _ in
-                XPCClientValidator.requiredSigningIdentifier
+            processCodeIdentity: { _ in
+                (
+                    executablePath: XPCClientValidator.requiredExecutablePath,
+                    signingIdentifier: XPCClientValidator.requiredSigningIdentifier
+                )
             },
+            filesystemObjectIsSecure: { _, _ in true },
             logFailure: { _ in }
         )
 
@@ -123,6 +164,71 @@ final class AgentServerTests: XCTestCase {
         XCTAssertTrue(
             (connection.exportedObject as? AgentXPCService) === service
         )
+    }
+
+    func testCleanupQuiescesInflightWriteBeforeFinalRestore() {
+        let writer = BlockingFanWriter()
+        let server = AgentServer(
+            writer: writer,
+            capabilities: capabilities(),
+            clock: { 100 }
+        )
+        let requestFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = server.handle(
+                ControlRequest(
+                    id: UUID(),
+                    command: .setRPM(fan: 0, rpm: 3_000)
+                )
+            )
+            requestFinished.signal()
+        }
+        XCTAssertEqual(
+            writer.writeStarted.wait(timeout: .now() + 1),
+            .success
+        )
+
+        let cleanupStarted = DispatchSemaphore(value: 0)
+        let cleanupFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            cleanupStarted.signal()
+            server.cleanup()
+            cleanupFinished.signal()
+        }
+        XCTAssertEqual(
+            cleanupStarted.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(
+            cleanupFinished.wait(timeout: .now() + 0.1),
+            .timedOut
+        )
+
+        writer.allowWrite.signal()
+        XCTAssertEqual(
+            requestFinished.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(
+            cleanupFinished.wait(timeout: .now() + 1),
+            .success
+        )
+        XCTAssertEqual(writer.events, [.setRPM, .restore])
+
+        let response = server.handle(
+            ControlRequest(
+                id: UUID(),
+                command: .setRPM(fan: 0, rpm: 3_100)
+            )
+        )
+        XCTAssertEqual(
+            response.result,
+            .rejected(
+                code: "terminated",
+                message: "The control agent is terminating."
+            )
+        )
+        XCTAssertEqual(writer.events, [.setRPM, .restore])
     }
 
     func testProcessLockRejectsSecondOwner() throws {
@@ -280,15 +386,23 @@ final class AgentServerTests: XCTestCase {
         effectiveUID: uid_t = 501,
         consoleUID: uid_t = 501,
         executablePath: String = XPCClientValidator.requiredExecutablePath,
-        signingIdentifier: String = XPCClientValidator.requiredSigningIdentifier
+        signingIdentifier: String = XPCClientValidator.requiredSigningIdentifier,
+        filesystemObjectsSecure: Bool = true
     ) -> XPCClientValidator {
         XPCClientValidator(
             securityIdentity: { _ in
                 (effectiveUID: effectiveUID, processID: 42)
             },
             consoleUserUID: { consoleUID },
-            executablePath: { _ in executablePath },
-            signingIdentifier: { _ in signingIdentifier },
+            processCodeIdentity: { _ in
+                (
+                    executablePath: executablePath,
+                    signingIdentifier: signingIdentifier
+                )
+            },
+            filesystemObjectIsSecure: { _, _ in
+                filesystemObjectsSecure
+            },
             logFailure: { _ in }
         )
     }
@@ -296,6 +410,37 @@ final class AgentServerTests: XCTestCase {
 
 private enum ValidationTestError: Error {
     case failed
+}
+
+private final class BlockingFanWriter: FanWriting, @unchecked Sendable {
+    enum Event: Equatable {
+        case setRPM
+        case restore
+    }
+
+    let writeStarted = DispatchSemaphore(value: 0)
+    let allowWrite = DispatchSemaphore(value: 0)
+
+    private let lock = NSLock()
+    private var recordedEvents: [Event] = []
+
+    var events: [Event] {
+        lock.withLock { recordedEvents }
+    }
+
+    func setRPM(_ rpm: Int, for fan: FanDescriptor) throws {
+        writeStarted.signal()
+        allowWrite.wait()
+        lock.withLock {
+            recordedEvents.append(.setRPM)
+        }
+    }
+
+    func restoreSystemAuto(_ fans: [FanDescriptor]) throws {
+        lock.withLock {
+            recordedEvents.append(.restore)
+        }
+    }
 }
 
 private final class RecordingFanWriter: FanWriting, @unchecked Sendable {

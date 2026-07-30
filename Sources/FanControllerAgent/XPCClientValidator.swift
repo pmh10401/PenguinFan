@@ -5,6 +5,8 @@ import Security
 import SystemConfiguration
 
 public final class XPCClientValidator: @unchecked Sendable {
+    static let requiredBundlePath =
+        "/Applications/PenguinFan Experimental.app"
     static let requiredExecutablePath =
         "/Applications/PenguinFan Experimental.app/Contents/MacOS/FanControllerApp"
     static let requiredSigningIdentifier =
@@ -14,6 +16,23 @@ public final class XPCClientValidator: @unchecked Sendable {
         effectiveUID: uid_t,
         processID: pid_t
     )
+    typealias ProcessCodeIdentity = (
+        executablePath: String,
+        signingIdentifier: String
+    )
+
+    private static let protectedFilesystemObjects = [
+        (path: requiredBundlePath, isDirectory: true),
+        (
+            path: requiredBundlePath + "/Contents",
+            isDirectory: true
+        ),
+        (
+            path: requiredBundlePath + "/Contents/MacOS",
+            isDirectory: true
+        ),
+        (path: requiredExecutablePath, isDirectory: false),
+    ]
 
     private static let logger = Logger(
         subsystem: "com.local.PenguinFan.experimental",
@@ -23,8 +42,10 @@ public final class XPCClientValidator: @unchecked Sendable {
     private let securityIdentity:
         @Sendable (NSXPCConnection) throws -> SecurityIdentity
     private let consoleUserUID: @Sendable () throws -> uid_t
-    private let executablePath: @Sendable (pid_t) throws -> String
-    private let signingIdentifier: @Sendable (String) throws -> String
+    private let processCodeIdentity:
+        @Sendable (pid_t) throws -> ProcessCodeIdentity
+    private let filesystemObjectIsSecure:
+        @Sendable (String, Bool) throws -> Bool
     private let logFailure: @Sendable (String) -> Void
 
     public convenience init() {
@@ -54,44 +75,42 @@ public final class XPCClientValidator: @unchecked Sendable {
                 }
                 return userID
             },
-            executablePath: { processID in
-                var buffer = [CChar](
-                    repeating: 0,
-                    count: 4 * Int(MAXPATHLEN)
-                )
-                let length = proc_pidpath(
-                    processID,
-                    &buffer,
-                    UInt32(buffer.count)
-                )
-                guard length > 0 else {
-                    throw ValidationError.executableUnavailable
-                }
-                return String(
-                    decoding: buffer.prefix(Int(length)).map {
-                        UInt8(bitPattern: $0)
-                    },
-                    as: UTF8.self
-                )
-            },
-            signingIdentifier: { path in
-                var staticCode: SecStaticCode?
-                let createStatus = SecStaticCodeCreateWithPath(
-                    URL(fileURLWithPath: path) as CFURL,
+            processCodeIdentity: { processID in
+                let attributes = [
+                    kSecGuestAttributePid as String: NSNumber(
+                        value: processID
+                    )
+                ] as CFDictionary
+                var guestCode: SecCode?
+                let guestStatus = SecCodeCopyGuestWithAttributes(
+                    nil,
+                    attributes,
                     [],
-                    &staticCode
+                    &guestCode
                 )
-                guard createStatus == errSecSuccess,
-                      let staticCode
+                guard guestStatus == errSecSuccess,
+                      let guestCode
                 else {
-                    throw ValidationError.staticCodeUnavailable
+                    throw ValidationError.processCodeUnavailable
                 }
-                guard SecStaticCodeCheckValidity(
-                    staticCode,
+                guard SecCodeCheckValidity(
+                    guestCode,
                     [],
                     nil
                 ) == errSecSuccess else {
-                    throw ValidationError.invalidCodeSignature
+                    throw ValidationError.invalidProcessCode
+                }
+
+                var staticCode: SecStaticCode?
+                let staticCodeStatus = SecCodeCopyStaticCode(
+                    guestCode,
+                    [],
+                    &staticCode
+                )
+                guard staticCodeStatus == errSecSuccess,
+                      let staticCode
+                else {
+                    throw ValidationError.processCodeMetadataUnavailable
                 }
 
                 var information: CFDictionary?
@@ -102,13 +121,30 @@ public final class XPCClientValidator: @unchecked Sendable {
                 )
                 guard informationStatus == errSecSuccess,
                       let dictionary = information as? [String: Any],
-                      let identifier = dictionary[
+                      let executableURL = dictionary[
+                        kSecCodeInfoMainExecutable as String
+                      ] as? URL,
+                      let signingIdentifier = dictionary[
                         kSecCodeInfoIdentifier as String
                       ] as? String
                 else {
-                    throw ValidationError.signingIdentifierUnavailable
+                    throw ValidationError.processCodeMetadataUnavailable
                 }
-                return identifier
+                return (
+                    executablePath: executableURL.path,
+                    signingIdentifier: signingIdentifier
+                )
+            },
+            filesystemObjectIsSecure: { path, isDirectory in
+                var metadata = stat()
+                guard lstat(path, &metadata) == 0,
+                      metadata.st_uid == 0,
+                      metadata.st_mode & (S_IWGRP | S_IWOTH) == 0
+                else {
+                    return false
+                }
+                let expectedType: mode_t = isDirectory ? S_IFDIR : S_IFREG
+                return metadata.st_mode & S_IFMT == expectedType
             },
             logFailure: { reason in
                 XPCClientValidator.logger.error(
@@ -122,14 +158,16 @@ public final class XPCClientValidator: @unchecked Sendable {
         securityIdentity: @escaping @Sendable
             (NSXPCConnection) throws -> SecurityIdentity,
         consoleUserUID: @escaping @Sendable () throws -> uid_t,
-        executablePath: @escaping @Sendable (pid_t) throws -> String,
-        signingIdentifier: @escaping @Sendable (String) throws -> String,
+        processCodeIdentity: @escaping @Sendable
+            (pid_t) throws -> ProcessCodeIdentity,
+        filesystemObjectIsSecure: @escaping @Sendable
+            (String, Bool) throws -> Bool,
         logFailure: @escaping @Sendable (String) -> Void
     ) {
         self.securityIdentity = securityIdentity
         self.consoleUserUID = consoleUserUID
-        self.executablePath = executablePath
-        self.signingIdentifier = signingIdentifier
+        self.processCodeIdentity = processCodeIdentity
+        self.filesystemObjectIsSecure = filesystemObjectIsSecure
         self.logFailure = logFailure
     }
 
@@ -142,16 +180,25 @@ public final class XPCClientValidator: @unchecked Sendable {
                 return false
             }
 
-            let path = try executablePath(identity.processID)
-            guard path == Self.requiredExecutablePath else {
+            let codeIdentity = try processCodeIdentity(identity.processID)
+            guard codeIdentity.executablePath == Self.requiredExecutablePath else {
                 logFailure("executable path mismatch")
                 return false
             }
-
-            let identifier = try signingIdentifier(path)
-            guard identifier == Self.requiredSigningIdentifier else {
+            guard codeIdentity.signingIdentifier ==
+                    Self.requiredSigningIdentifier
+            else {
                 logFailure("signing identifier mismatch")
                 return false
+            }
+            for object in Self.protectedFilesystemObjects {
+                guard try filesystemObjectIsSecure(
+                    object.path,
+                    object.isDirectory
+                ) else {
+                    logFailure("installation permissions invalid")
+                    return false
+                }
             }
             return true
         } catch {
@@ -164,8 +211,7 @@ public final class XPCClientValidator: @unchecked Sendable {
 private enum ValidationError: Error {
     case securityIdentityUnavailable
     case consoleUserUnavailable
-    case executableUnavailable
-    case staticCodeUnavailable
-    case invalidCodeSignature
-    case signingIdentifierUnavailable
+    case processCodeUnavailable
+    case invalidProcessCode
+    case processCodeMetadataUnavailable
 }

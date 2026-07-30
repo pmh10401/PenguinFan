@@ -4,6 +4,8 @@ import Foundation
 public final class AgentXPCService: NSObject, FanControllerXPCProtocol {
     public static let machServiceName =
         "com.local.PenguinFan.experimental.agent"
+    public static let maximumRequestSize =
+        ControlProtocolCodec.maximumMessageSize
 
     private static let malformedResponseData: Data = {
         let response = ControlResponse(
@@ -30,6 +32,10 @@ public final class AgentXPCService: NSObject, FanControllerXPCProtocol {
         _ requestData: Data,
         withReply reply: @escaping (Data) -> Void
     ) {
+        guard requestData.count <= Self.maximumRequestSize else {
+            reply(Self.malformedResponseData)
+            return
+        }
         do {
             let request = try XPCMessageAdapter.decodeRequest(requestData)
             let response = server.handle(request)

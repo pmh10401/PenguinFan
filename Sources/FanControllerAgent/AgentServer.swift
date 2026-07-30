@@ -7,6 +7,7 @@ public final class AgentServer: @unchecked Sendable {
     private let writer: any FanWriting
     private let capabilities: HardwareCapabilities?
     private let clock: () -> TimeInterval
+    private let operationLock = NSLock()
     private let lock = NSLock()
 
     private var processedRequestIDs: Set<UUID> = []
@@ -34,6 +35,14 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     public func handle(_ request: ControlRequest) -> ControlResponse {
+        operationLock.withLock {
+            handleWhileHoldingOperationGate(request)
+        }
+    }
+
+    private func handleWhileHoldingOperationGate(
+        _ request: ControlRequest
+    ) -> ControlResponse {
         let duplicateOrTerminated = lock.withLock { () -> ControlResult? in
             if terminated {
                 return .rejected(
@@ -131,7 +140,7 @@ public final class AgentServer: @unchecked Sendable {
             }
 
         case .shutdown:
-            cleanup()
+            cleanupWhileHoldingOperationGate()
             let handler = lock.withLock { terminationHandler }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(
                 deadline: .now() + 0.05
@@ -165,6 +174,12 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     public func checkWatchdog() {
+        operationLock.withLock {
+            checkWatchdogWhileHoldingOperationGate()
+        }
+    }
+
+    private func checkWatchdogWhileHoldingOperationGate() {
         let shouldTerminate = lock.withLock { () -> Bool in
             guard !terminated, clock() - lastHeartbeat >= 6 else {
                 return false
@@ -185,6 +200,12 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     public func cleanup() {
+        operationLock.withLock {
+            cleanupWhileHoldingOperationGate()
+        }
+    }
+
+    private func cleanupWhileHoldingOperationGate() {
         let shouldRestore = lock.withLock { () -> Bool in
             guard !terminated else {
                 return false
