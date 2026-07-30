@@ -60,9 +60,9 @@ verify_app() {
   [[ -d "$app" ]] || fail "release app is missing"
   [[ "$(plist_value "$info" CFBundleIdentifier)" == \
     "com.local.PenguinFan" ]] || fail "wrong bundle identifier"
-  [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.1.0" ]] \
+  [[ "$(plist_value "$info" CFBundleShortVersionString)" == "1.2.0" ]] \
     || fail "wrong app version"
-  [[ "$(plist_value "$info" CFBundleVersion)" == "14" ]] \
+  [[ "$(plist_value "$info" CFBundleVersion)" == "15" ]] \
     || fail "wrong build number"
   [[ "$(plist_value "$info" CFBundleDisplayName)" == \
     "PenguinFan" ]] || fail "wrong display name"

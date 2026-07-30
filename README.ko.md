@@ -9,14 +9,14 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 > **영원히 무료:** PenguinFan은 [MIT 라이선스](LICENSE)로 무료 배포됩니다.
 > 개인 및 상업적 사용, 학습, 수정, 재배포가 가능합니다.
 
-## PenguinFan 1.1.0 정식 릴리즈
+## PenguinFan 1.2.0 정식 릴리즈
 
-`1.1.0`은 권한 분리 팬 제어 구조를 적용한 첫 GitHub 정식 릴리즈입니다.
-기존에 화면에 나타나던 `osascript` 관리자 암호 입력 방식 대신, 서명된
-`SMAppService` LaunchDaemon과 신원을 검증하는 권한 XPC 연결을 사용합니다.
+`1.2.0`은 첫 커브 포인트 미만의 시스템 제어 구간, 직접 RPM 입력과 증감
+버튼, 더 넓은 설정 창을 추가합니다. 서명된 `SMAppService` LaunchDaemon과
+신원을 검증하는 권한 XPC 구조는 그대로 유지합니다.
 
 - 정식 앱: `/Applications/PenguinFan.app`
-- 설치 파일: `PenguinFan-1.1.0.pkg`
+- 설치 파일: `PenguinFan-1.2.0.pkg`
 - Apple Development 인증서로 서명
 - `Mac14,6` M2 Max MacBook Pro에서 실제 검증
 - Apple 공증은 아직 받지 않음
@@ -32,6 +32,8 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 - 최대 센서 온도 실시간 표시
 - 듀얼 팬의 현재 RPM과 목표 RPM 표시
 - macOS 시스템, 온도 커브, 고정 수동 모드
+- 첫 커브 포인트 미만에서 macOS 시스템 팬 제어 사용
+- 수동 RPM 직접 입력, 슬라이더, `-50` / `+50` 버튼
 - 팬별 하드웨어 RPM 범위 검증
 - `SMAppService`가 관리하는 root 헬퍼
 - 코드 신원과 설치 경로를 확인하는 권한 XPC 검증
@@ -67,7 +69,7 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 
 ## 다운로드 및 설치
 
-1. [GitHub Releases](../../releases)에서 `PenguinFan-1.1.0.pkg`를 받습니다.
+1. [GitHub Releases](../../releases)에서 `PenguinFan-1.2.0.pkg`를 받습니다.
 2. 패키지를 열어 설치합니다.
 3. `/Applications/PenguinFan.app`을 실행합니다.
 4. **커브** 또는 **수동**을 선택하고 권한 안내에서 **계속**을 누릅니다.

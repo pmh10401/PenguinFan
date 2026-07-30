@@ -60,6 +60,17 @@ public enum CurveEngine {
         return min(max(proposed, minimumRPM), maximumRPM)
     }
 
+    public static func shouldUseSystemAuto(
+        temperature: Double,
+        points: [CurvePoint]
+    ) throws -> Bool {
+        try validate(points)
+        guard temperature.isFinite else {
+            throw CurveEngineError.nonFiniteTemperature
+        }
+        return temperature < points[0].temperature
+    }
+
     public static func limitedRPM(previous: Int, proposed: Int, maximumStep: Int) -> Int {
         let step = max(0, maximumStep)
         return min(max(proposed, previous - step), previous + step)

@@ -11,15 +11,15 @@ control, and one-click restoration to macOS automatic fan control.
 > [MIT License](LICENSE). You may use, study, modify, and redistribute it,
 > including for commercial purposes.
 
-## PenguinFan 1.1.0
+## PenguinFan 1.2.0
 
-Version `1.1.0` is the first stable GitHub release of the privileged fan-control
-architecture. It replaces the previous visible `osascript` administrator
-workflow with a signed `SMAppService` LaunchDaemon and a validated privileged
-XPC connection.
+Version `1.2.0` adds a low-temperature System zone below the first curve point,
+direct RPM entry with increment buttons, and a larger Settings window. The
+signed `SMAppService` LaunchDaemon and validated privileged XPC architecture
+remain unchanged.
 
 - Stable app: `/Applications/PenguinFan.app`
-- Package: `PenguinFan-1.1.0.pkg`
+- Package: `PenguinFan-1.2.0.pkg`
 - Signed with an Apple Development certificate
 - Verified on a `Mac14,6` M2 Max MacBook Pro
 - Not notarized by Apple
@@ -35,6 +35,8 @@ hardware validation is limited to the model listed below.
 - Live maximum sensor temperature
 - Dual-fan current and target RPM monitoring
 - macOS System, temperature Curve, and fixed Manual modes
+- Automatic macOS System control below the first curve point
+- Manual RPM entry, slider, and `-50` / `+50` controls
 - Per-fan hardware range validation
 - Root helper managed by `SMAppService`
 - Live XPC client validation using code identity and installation path
@@ -70,7 +72,7 @@ not currently supported.
 
 ## Download and install
 
-1. Download `PenguinFan-1.1.0.pkg` from [GitHub Releases](../../releases).
+1. Download `PenguinFan-1.2.0.pkg` from [GitHub Releases](../../releases).
 2. Open the package and complete the installer.
 3. Launch `/Applications/PenguinFan.app`.
 4. Select **Curve** or **Manual**, review the permission explanation, and
