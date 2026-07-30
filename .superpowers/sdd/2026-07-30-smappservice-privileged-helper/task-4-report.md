@@ -159,3 +159,90 @@ Result:
 ```text
 Build of product 'FanControllerApp' complete! (2.88s)
 ```
+
+## Fix Round 2/5: Connection-Scoped Failure Events
+
+### Finding
+
+The request-generation guard did not identify the XPC connection that emitted
+an interruption or invalidation. A callback from an old connection could
+therefore be interpreted as a failure of the current connection and overwrite
+a newer System or custom-control status.
+
+### TDD RED
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+Result: test compilation failed as expected because
+`makeControlClient(connectionFailureHandler:)` did not exist. The manager could
+only use one shared failure callback and could not bind events to individual
+connections.
+
+### Implementation
+
+- Added a per-client failure-handler override to
+  `PrivilegedServiceManager.makeControlClient`.
+- Assigned a UUID to every Runtime-created control connection.
+- Accepted interruption/invalidation callbacks only when their UUID matches the
+  currently active connection.
+- Deactivated the active connection identity and heartbeat before restoring
+  System mode.
+- Retained the coordinator connection identity so a later explicit custom-mode
+  request can safely reactivate the retained connection.
+- Cleared active and retained connection identities during failure and shutdown.
+- Kept request-generation checks, watchdog behavior, explicit confirmation,
+  and the default no-`osascript` path unchanged.
+
+### Focused Tests
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift test --filter PrivilegedServiceManagerTests
+```
+
+First GREEN attempt:
+
+```text
+Executed 25 tests, with 1 failure (0 unexpected).
+```
+
+The runtime race tests passed. The connection-callback unit test released both
+clients before manually firing the weak invalidation callback, so it observed
+no callback. The test was corrected to retain both client lifetimes.
+
+The same command was run again.
+
+Final result:
+
+```text
+Executed 25 tests, with 0 failures (0 unexpected).
+Test Suite 'Selected tests' passed.
+```
+
+The focused suite now deterministically covers:
+
+- old connection invalidation after a newer System selection
+- old connection invalidation after a newer successful Manual request
+- per-client failure callbacks remaining isolated
+
+### Release Build
+
+Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  /usr/bin/xcrun swift build -c release --product FanControllerApp
+```
+
+Result:
+
+```text
+Build of product 'FanControllerApp' complete! (2.87s)
+```

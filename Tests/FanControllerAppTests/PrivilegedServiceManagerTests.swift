@@ -283,6 +283,115 @@ final class PrivilegedServiceManagerTests: XCTestCase {
         XCTAssertFalse(model.ipcConnected)
     }
 
+    func testOldConnectionInvalidationDoesNotOverwriteNewerSystemSelection()
+        async
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let oldConnection = FakeXPCConnection(behavior: .hold)
+        let service = FakeServiceRegistration(status: .enabled)
+        let manager = makeManager(
+            service: service,
+            connectionFactory: { oldConnection }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+
+        model.selectMode(.curve)
+        await waitForRequest(oldConnection)
+        model.selectMode(.systemAuto)
+        oldConnection.invalidationHandler?()
+        try? await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(model.settings.mode, .systemAuto)
+        XCTAssertEqual(model.controlStatus, .systemAuto)
+        XCTAssertNil(model.diagnosticMessage)
+        XCTAssertFalse(model.ipcConnected)
+    }
+
+    func testOldConnectionInvalidationDoesNotOverwriteNewerManualSuccess()
+        async throws
+    {
+        let fan = FanDescriptor(
+            index: 0,
+            minimumRPM: 1_500,
+            maximumRPM: 6_000,
+            modeKey: "F0Md"
+        )
+        let oldConnection = FakeXPCConnection(behavior: .hold)
+        let currentConnection = FakeXPCConnection(behavior: .hold)
+        var connections = [oldConnection, currentConnection]
+        let service = FakeServiceRegistration(status: .enabled)
+        let manager = makeManager(
+            service: service,
+            connectionFactory: { connections.removeFirst() }
+        )
+        let runtime = RuntimeController(serviceManager: manager)
+        let model = AppModel()
+        model.capabilities = HardwareCapabilities(
+            modelIdentifier: "Mac14,6",
+            fans: [fan],
+            ftstAvailable: true
+        )
+        runtime.start(model: model, startSensors: false)
+
+        model.selectMode(.curve)
+        await waitForRequest(oldConnection)
+        model.selectMode(.manual)
+        await waitForRequest(currentConnection)
+        try currentConnection.replyToHeldRequest(
+            with: .status(
+                AgentStatus(
+                    modelIdentifier: "Mac14,6",
+                    fans: [fan],
+                    manualFanIndices: []
+                )
+            )
+        )
+        try await Task.sleep(for: .milliseconds(20))
+        oldConnection.invalidationHandler?()
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(model.settings.mode, .manual)
+        XCTAssertEqual(model.controlStatus, .manual)
+        XCTAssertNil(model.diagnosticMessage)
+        XCTAssertTrue(model.ipcConnected)
+    }
+
+    func testControlClientsUseConnectionScopedFailureHandlers() {
+        let oldConnection = FakeXPCConnection(behavior: .hold)
+        let currentConnection = FakeXPCConnection(behavior: .hold)
+        var connections = [oldConnection, currentConnection]
+        let manager = makeManager(
+            connectionFactory: { connections.removeFirst() }
+        )
+        let oldFailureCount = LockedCounter()
+        let currentFailureCount = LockedCounter()
+
+        let oldClient = manager.makeControlClient {
+            oldFailureCount.increment()
+        }
+        let currentClient = manager.makeControlClient {
+            currentFailureCount.increment()
+        }
+        withExtendedLifetime((oldClient, currentClient)) {
+            oldConnection.invalidationHandler?()
+        }
+
+        XCTAssertEqual(oldFailureCount.value, 1)
+        XCTAssertEqual(currentFailureCount.value, 0)
+    }
+
     func testRefreshStatusMapsEveryKnownServiceStatus() {
         let cases: [(SMAppService.Status, PrivilegedServiceState)] = [
             (.notRegistered, .notRegistered),

@@ -95,11 +95,14 @@ final class PrivilegedServiceManager {
         approvalSettingsOpener()
     }
 
-    func makeControlClient() -> any ControlClient {
+    func makeControlClient(
+        connectionFailureHandler: (@Sendable () -> Void)? = nil
+    ) -> any ControlClient {
         XPCControlClient(
             connection: connectionFactory(),
             requestTimeout: requestTimeout,
-            connectionFailureHandler: connectionFailureHandler
+            connectionFailureHandler:
+                connectionFailureHandler ?? self.connectionFailureHandler
         )
     }
 

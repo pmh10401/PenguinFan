@@ -12,6 +12,8 @@ final class RuntimeController: ObservableObject {
     private var coordinator: ControlCoordinator?
     private var sensorTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var activeConnectionIdentity: UUID?
+    private var coordinatorConnectionIdentity: UUID?
     private var observers: [NSObjectProtocol] = []
     private var started = false
     private var lastSnapshotAt: Date?
@@ -21,11 +23,7 @@ final class RuntimeController: ObservableObject {
         restoreSystemModeAndDisconnect: { [weak self] in
             await self?.restoreAndShutdown()
         },
-        connectionFailureHandler: { [weak self] in
-            Task { @MainActor [weak self] in
-                await self?.handleConnectionFailure()
-            }
-        }
+        connectionFailureHandler: {}
     )
 
     private var serviceManager: PrivilegedServiceManager {
@@ -135,6 +133,10 @@ final class RuntimeController: ObservableObject {
         }
 
         if mode == .systemAuto {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            activeConnectionIdentity = nil
+            model.ipcConnected = false
             if let coordinator {
                 do {
                     try await coordinator.restoreSystemAuto()
@@ -279,6 +281,8 @@ final class RuntimeController: ObservableObject {
             throw StaleModeRequestError()
         }
         if let coordinator {
+            activeConnectionIdentity = coordinatorConnectionIdentity
+            model.ipcConnected = activeConnectionIdentity != nil
             return coordinator
         }
         guard let fans = model.capabilities?.fans, !fans.isEmpty else {
@@ -288,6 +292,7 @@ final class RuntimeController: ObservableObject {
         }
 
         let client: any ControlClient
+        let connectionIdentity = UUID()
         if legacyFallbackEnabled() {
             let socketURL = try await launcher.startAgent()
             client = UnixSocketControlClient(path: socketURL.path)
@@ -297,7 +302,15 @@ final class RuntimeController: ObservableObject {
                     "권한 서비스가 활성화되지 않았습니다."
                 )
             }
-            client = serviceManager.makeControlClient()
+            client = serviceManager.makeControlClient(
+                connectionFailureHandler: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        await self?.handleConnectionFailure(
+                            connectionIdentity: connectionIdentity
+                        )
+                    }
+                }
+            )
         }
         let coordinator = ControlCoordinator(
             client: client,
@@ -309,6 +322,8 @@ final class RuntimeController: ObservableObject {
             throw StaleModeRequestError()
         }
         self.coordinator = coordinator
+        coordinatorConnectionIdentity = connectionIdentity
+        activeConnectionIdentity = connectionIdentity
         terminationBox.set(coordinator)
         model.ipcConnected = true
         return coordinator
@@ -393,6 +408,8 @@ final class RuntimeController: ObservableObject {
             try? await coordinator.restoreSystemAuto()
         }
         self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
         terminationBox.set(nil)
         model.ipcConnected = false
         model.controlStatus = .failed
@@ -421,8 +438,13 @@ final class RuntimeController: ObservableObject {
         model.isPrivilegedApprovalPresented = false
     }
 
-    private func handleConnectionFailure() async {
+    private func handleConnectionFailure(
+        connectionIdentity: UUID
+    ) async {
         guard let model else {
+            return
+        }
+        guard activeConnectionIdentity == connectionIdentity else {
             return
         }
         await failControl(
@@ -486,6 +508,8 @@ final class RuntimeController: ObservableObject {
             await coordinator.restoreAndShutdown()
         }
         self.coordinator = nil
+        activeConnectionIdentity = nil
+        coordinatorConnectionIdentity = nil
         terminationBox.set(nil)
         model?.ipcConnected = false
         model?.markSystemAuto()
