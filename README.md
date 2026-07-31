@@ -1,141 +1,129 @@
 # PenguinFan
 
-Free and open-source native macOS fan controller for the M2 Max MacBook Pro.
+[English](README.md) | [한국어](README.ko.md)
 
-M2 Max MacBook Pro용 무료 오픈소스 네이티브 팬 컨트롤러입니다. SwiftUI로
-작성되어 Python이나 외부 런타임이 필요하지 않습니다.
+PenguinFan is a free and open-source native macOS fan controller for the
+M2 Max MacBook Pro. Its lightweight SwiftUI menu bar interface provides live
+temperature and RPM monitoring, temperature-based fan curves, manual RPM
+control, and one-click restoration to macOS automatic fan control.
 
-> **Free forever:** This project is distributed at no charge under the
-> [MIT License](LICENSE). You may use, study, modify, and redistribute it.
+> **Free forever:** PenguinFan is distributed at no charge under the
+> [MIT License](LICENSE). You may use, study, modify, and redistribute it,
+> including for commercial purposes.
+
+## PenguinFan 1.2.2
+
+Version `1.2.2` restores reliable Curve and Manual control after installation.
+It supports localized and symbolic-link application paths, preserves an
+approved `SMAppService` helper across app updates, and keeps a Curve command
+stable through a brief missing-temperature sample.
+
+- Stable app: `/Applications/PenguinFan.app`
+- Package: `PenguinFan-1.2.2.pkg`
+- Signed with an Apple Development certificate
+- Verified on a `Mac14,6` M2 Max MacBook Pro
+- Not notarized by Apple
+
+Gatekeeper may block the installer or app on another Mac. If you trust the
+download, use **System Settings > Privacy & Security > Open Anyway**. Current
+hardware validation is limited to the model listed below.
 
 ## Features
 
-- Native SwiftUI dashboard and menu bar interface
-- Live CPU hotspot temperature and dual-fan RPM monitoring
-- macOS system automatic mode
-- Fixed manual RPM mode
-- Temperature-based fan curve mode
+- Native SwiftUI menu bar app
+- Animated penguin icon whose walking speed follows fan speed
+- Live maximum sensor temperature
+- Dual-fan current and target RPM monitoring
+- macOS System, temperature Curve, and fixed Manual modes
+- Automatic macOS System control below the first curve point
+- Manual RPM entry, slider, and `-50` / `+50` controls
 - Per-fan hardware range validation
-- Privileged write agent with local Unix socket IPC
-- Heartbeat watchdog and automatic macOS control restoration
-- Read-only diagnostics bundled with the app
+- Root helper managed by `SMAppService`
+- Live XPC client validation using code identity and installation path
+- LaunchDaemon `SpawnConstraint` for signing identifier, Team ID, and category
+- Six-second heartbeat watchdog
+- Automatic restoration to macOS fan control
+- Read-only hardware diagnostics
 
-## Verified hardware
+## Verified hardware and result
 
-The current release is specifically validated on:
+| Item | Value |
+| --- | --- |
+| Model | `Mac14,6` |
+| Chip | Apple M2 Max |
+| Fan 1 range | `1350-5349 RPM` |
+| Fan 2 range | `1522-5777 RPM` |
+| Curve sensor | `TCMz` CPU die hotspot |
+| Minimum macOS | macOS 13 |
 
-- Mac model: `Mac14,6`
-- Chip: Apple M2 Max
-- Fan 1 range: `1350-5349 RPM`
-- Fan 2 range: `1522-5777 RPM`
-- Curve sensor: `TCMz` CPU die hotspot
-- macOS: Apple Silicon
+Real hardware Curve test on July 31, 2026:
 
-Real hardware verification performed for v1.0.3:
+- Temperature: approximately `81.5 C`
+- Curve target: `5063 RPM`
+- Fan 1 response: `5065 RPM`
+- Fan 2 response: `5048 RPM`
+- XPC validation: `accepted reason=validated`
+- Privileged helper: running and accepting Curve commands
 
-- Manual test: Fan 1 requested `1650 RPM` for 5 seconds and responded up to
-  `1666 RPM`.
-- Curve test at `87.21 C`: Fan 1 reached `5307/5349 RPM`; Fan 2 reached
-  `5721/5777 RPM`.
-- Both tests restored `F0Md=0` and `F1Md=0` after completion.
-- The related SMCKit test suite passed all 11 tests.
+Other Apple Silicon models may use different SMC keys and fan ranges and are
+not currently supported.
 
-Other Apple Silicon models may expose different SMC keys and fan ranges. They
-should be treated as unsupported until tested.
+## Download and install
 
-## Download
+1. Download `PenguinFan-1.2.2.pkg` from [GitHub Releases](../../releases).
+2. Open the package and complete the installer.
+3. Launch `/Applications/PenguinFan.app`.
+4. Select **Curve** or **Manual**, review the permission explanation, and
+   choose **Continue**.
+5. If macOS requests approval, enable PenguinFan under
+   **System Settings > General > Login Items & Extensions**.
 
-Download the latest free installer from
-[GitHub Releases](../../releases/latest).
+Temperature monitoring does not require administrator privileges. The
+privileged service starts only when fan control is requested.
 
-The installer places the app at:
+## Safety design
 
-```text
-/Applications/PenguinFan.app
-```
+- The helper accepts only status, heartbeat, bounded RPM, restore, and shutdown
+  commands.
+- The client must match the signed bundle layout under `/Applications`, signing
+  identifier, Team ID, console user, and secure installation path.
+- A lost heartbeat, connection failure, sleep event, sustained sensor failure,
+  app exit, or explicit System selection restores both fans to macOS automatic
+  control.
+- Critical macOS thermal pressure requests the maximum supported fan speed.
 
-The release is locally ad-hoc signed and is not Apple-notarized. macOS may show
-a Gatekeeper warning on another Mac.
-
-## How it works
-
-- Monitoring is read-only and does not require administrator privileges.
-- Selecting Curve or Manual mode requests administrator approval.
-- The privileged agent accepts only status, heartbeat, bounded fan RPM,
-  restore, and shutdown commands.
-- If heartbeat is lost for 6 seconds, the sensor fails, the Mac sleeps, or the
-  app exits, both fans are returned to macOS automatic control.
-- Critical macOS thermal pressure always requests each fan's maximum supported
-  RPM.
+Direct fan control can affect cooling, noise, component temperature, and
+hardware lifespan. This software is provided without warranty.
 
 ## Build from source
 
-Requirements:
-
-- macOS 13 or later
-- Apple Silicon Mac
-- Xcode with Swift 6 support
-
-Build and run:
-
-```bash
-./script/build_and_run.sh
-```
-
-Build without launching:
+Requirements: macOS 13 or later, Apple Silicon, and Xcode with Swift 6 support.
 
 ```bash
 ./script/build_and_run.sh --verify
+
+./script/run_tests.sh
 ```
 
-Run the read-only hardware diagnostic:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcrun swift run FanDiagnostics
-```
-
-Build an installer:
-
-```bash
-./script/build_installer.sh 1.0.12
-open installer/PenguinFan-1.0.12.pkg
-```
-
-Run tests:
-
-```bash
-xcrun swift test
-```
+The privileged release package requires a valid signing identity. Forks must
+replace the hard-coded bundle identifiers and Team ID before distribution.
 
 ## Uninstall
 
-Return to System mode and quit the app first, then remove it:
-
-```bash
-sudo rm -rf /Applications/PenguinFan.app
-```
-
-The app does not install a LaunchDaemon or persistent root helper.
-
-## Safety warning
-
-Direct fan control can affect cooling, noise, component temperature, and
-hardware lifespan. This software is experimental and provided without warranty.
-Keep macOS automatic restoration enabled, monitor temperatures, and do not use
-untested builds on unsupported hardware.
+1. Select **System** mode and confirm that macOS controls the fans.
+2. Remove the privileged service from PenguinFan settings.
+3. Quit PenguinFan.
+4. Remove `/Applications/PenguinFan.app`.
 
 ## Open-source references
-
-AppleSMC access and Apple Silicon fan research were informed by:
 
 - [agoodkind/macos-smc-fan](https://github.com/agoodkind/macos-smc-fan)
 - [metaspartan/mactop](https://github.com/metaspartan/mactop)
 - [angristan/MacThrottle](https://github.com/angristan/MacThrottle)
 - [ryyansafar/MacMonitor](https://github.com/ryyansafar/MacMonitor)
 
-Third-party license notices are included in `LICENSES/`.
+Third-party notices are included in `LICENSES/`.
 
 ## License
 
-MIT License. Free for personal and commercial use.
+[MIT License](LICENSE). Free for personal and commercial use.
