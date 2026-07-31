@@ -12,7 +12,21 @@ final class AppModel: ObservableObject {
     @Published var diagnosticMessage: String?
     @Published var capabilities: HardwareCapabilities?
     @Published var ipcConnected = false
+    @Published var privilegedServiceState: PrivilegedServiceState =
+        .notRegistered
+    @Published var pendingPrivilegedMode: ControlMode?
+    @Published var isPrivilegedApprovalPresented = false
+    @Published var isPrivilegedServiceRemovalConfirmationPresented = false
+    @Published var isPrivilegedServiceRemovalInProgress = false
+    @Published var legacyFallbackEnabled = false
+    @Published var requiresFreshPrivilegedConfirmation = false
     var modeRequestHandler: ((ControlMode) -> Void)?
+    var modeRequestGenerationHandler: ((ControlMode, UInt64) -> Void)?
+    var privilegedApprovalHandler: ((UInt64) async -> Void)?
+    var privilegedApprovalSettingsHandler: (() -> Void)?
+    var privilegedServiceRemovalHandler: (() async -> Bool)?
+    private(set) var modeRequestGeneration: UInt64 = 0
+    private var pendingPrivilegedGeneration: UInt64?
 
     init(settings: FanSettings = .safeDefaults) {
         self.settings = settings
@@ -36,6 +50,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var privilegedServiceStatusLabel: String {
+        switch privilegedServiceState {
+        case .notRegistered, .registering:
+            "미등록"
+        case .requiresApproval:
+            "승인 대기"
+        case .enabled:
+            "활성"
+        case .notFound:
+            "등록 확인 필요"
+        case .failed:
+            "오류"
+        }
+    }
+
+    var canOpenPrivilegedApprovalSettings: Bool {
+        privilegedServiceState == .requiresApproval
+    }
+
+    var canRemovePrivilegedService: Bool {
+        privilegedServiceState == .enabled
+            || privilegedServiceState == .requiresApproval
+    }
+
     var safeRPMRange: ClosedRange<Double> {
         guard let fans = capabilities?.fans, !fans.isEmpty else {
             return 1_500...6_000
@@ -48,6 +86,10 @@ final class AppModel: ObservableObject {
         return Double(minimum)...Double(maximum)
     }
 
+    var safeRPMIntegerRange: ClosedRange<Int> {
+        Int(safeRPMRange.lowerBound)...Int(safeRPMRange.upperBound)
+    }
+
     func record(_ newSnapshot: SensorSnapshot) {
         snapshot = newSnapshot
         history.append(newSnapshot)
@@ -58,6 +100,33 @@ final class AppModel: ObservableObject {
     }
 
     func selectMode(_ mode: ControlMode) {
+        guard !isPrivilegedServiceRemovalInProgress
+                || mode == .systemAuto
+        else {
+            diagnosticMessage =
+                "권한 서비스 제거가 끝날 때까지 커브 또는 수동 모드를 선택할 수 없습니다."
+            return
+        }
+
+        modeRequestGeneration &+= 1
+        let generation = modeRequestGeneration
+
+        if mode != .systemAuto,
+           privilegedServiceState != .enabled
+            || requiresFreshPrivilegedConfirmation {
+            settings.mode = .systemAuto
+            pendingPrivilegedMode = mode
+            pendingPrivilegedGeneration = generation
+            isPrivilegedApprovalPresented = true
+            controlStatus = .authorizing
+            diagnosticMessage =
+                "계속을 선택해야 권한 서비스 등록을 시작합니다."
+            return
+        }
+
+        pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
         settings.mode = mode
         if mode == .systemAuto {
             controlStatus = .restoring
@@ -68,16 +137,127 @@ final class AppModel: ObservableObject {
                 : "관리자 제어 연결 후 적용됩니다."
         }
         modeRequestHandler?(mode)
+        modeRequestGenerationHandler?(mode, generation)
+    }
+
+    func confirmPrivilegedApproval() async {
+        guard let pendingPrivilegedGeneration else {
+            return
+        }
+        await privilegedApprovalHandler?(pendingPrivilegedGeneration)
+    }
+
+    func cancelPrivilegedApproval() {
+        modeRequestGeneration &+= 1
+        pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = .systemAuto
+        controlStatus = .systemAuto
+        diagnosticMessage =
+            "권한 요청을 취소했습니다. macOS 시스템 팬 제어를 유지합니다."
+    }
+
+    func openPrivilegedApprovalSettings() {
+        guard canOpenPrivilegedApprovalSettings else {
+            return
+        }
+        privilegedApprovalSettingsHandler?()
+    }
+
+    func requestPrivilegedServiceRemoval() {
+        guard canRemovePrivilegedService,
+              !isPrivilegedServiceRemovalInProgress
+        else {
+            return
+        }
+        isPrivilegedServiceRemovalConfirmationPresented = true
+    }
+
+    func cancelPrivilegedServiceRemoval() {
+        isPrivilegedServiceRemovalConfirmationPresented = false
+    }
+
+    func confirmPrivilegedServiceRemoval() async {
+        guard isPrivilegedServiceRemovalConfirmationPresented,
+              canRemovePrivilegedService,
+              !isPrivilegedServiceRemovalInProgress,
+              let privilegedServiceRemovalHandler
+        else {
+            return
+        }
+
+        isPrivilegedServiceRemovalConfirmationPresented = false
+        isPrivilegedServiceRemovalInProgress = true
+        modeRequestGeneration &+= 1
+        pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = .systemAuto
+        controlStatus = .restoring
+        let didRemove = await privilegedServiceRemovalHandler()
+        if !didRemove {
+            pendingPrivilegedMode = nil
+            pendingPrivilegedGeneration = nil
+            isPrivilegedApprovalPresented = false
+            settings.mode = .systemAuto
+            controlStatus = .failed
+            requiresFreshPrivilegedConfirmation = true
+        } else {
+            requiresFreshPrivilegedConfirmation = false
+        }
+        isPrivilegedServiceRemovalInProgress = false
+    }
+
+    func applyPendingPrivilegedMode(
+        generation: UInt64
+    ) -> ControlMode? {
+        guard isCurrentModeRequest(generation),
+              pendingPrivilegedGeneration == generation,
+              let pendingPrivilegedMode
+        else {
+            return nil
+        }
+        self.pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
+        settings.mode = pendingPrivilegedMode
+        return pendingPrivilegedMode
     }
 
     func returnToSystemAuto() {
         selectMode(.systemAuto)
     }
 
+    func updateManualRPM(_ rpm: Int) {
+        settings.manualRPM = min(
+            max(rpm, safeRPMIntegerRange.lowerBound),
+            safeRPMIntegerRange.upperBound
+        )
+    }
+
+    func adjustManualRPM(by amount: Int) {
+        updateManualRPM(settings.manualRPM + amount)
+    }
+
     func markSystemAuto() {
+        pendingPrivilegedMode = nil
+        pendingPrivilegedGeneration = nil
+        isPrivilegedApprovalPresented = false
         settings.mode = .systemAuto
         controlStatus = .systemAuto
         diagnosticMessage = nil
+    }
+
+    func markSystemAuto(ifCurrent generation: UInt64) {
+        guard isCurrentModeRequest(generation) else {
+            return
+        }
+        markSystemAuto()
+    }
+
+    func isCurrentModeRequest(_ generation: UInt64) -> Bool {
+        modeRequestGeneration == generation
     }
 
     func updateCurvePoint(

@@ -38,6 +38,26 @@ final class CurveEngineTests: XCTestCase {
         XCTAssertThrowsError(try CurveEngine.validate(points))
     }
 
+    func testCurveUsesSystemAutoOnlyBelowFirstPoint() throws {
+        let points = [
+            CurvePoint(temperature: 55, rpm: 2_300),
+            CurvePoint(temperature: 90, rpm: 6_200),
+        ]
+
+        XCTAssertTrue(
+            try CurveEngine.shouldUseSystemAuto(
+                temperature: 54.9,
+                points: points
+            )
+        )
+        XCTAssertFalse(
+            try CurveEngine.shouldUseSystemAuto(
+                temperature: 55,
+                points: points
+            )
+        )
+    }
+
     func testLimitedRPMRestrictsRiseAndFallToOneStep() {
         XCTAssertEqual(CurveEngine.limitedRPM(previous: 3_000, proposed: 4_000, maximumStep: 300), 3_300)
         XCTAssertEqual(CurveEngine.limitedRPM(previous: 4_000, proposed: 3_000, maximumStep: 300), 3_700)

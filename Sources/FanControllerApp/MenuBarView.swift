@@ -37,6 +37,28 @@ struct MenuBarView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .alert(
+            "팬 제어 권한이 필요합니다",
+            isPresented: $model.isPrivilegedApprovalPresented
+        ) {
+            Button("계속") {
+                Task {
+                    await model.confirmPrivilegedApproval()
+                }
+            }
+            if model.privilegedServiceState == .requiresApproval {
+                Button("시스템 설정 열기") {
+                    model.openPrivilegedApprovalSettings()
+                }
+            }
+            Button("취소", role: .cancel) {
+                model.cancelPrivilegedApproval()
+            }
+        } message: {
+            Text(
+                "PenguinFan은 실제 팬 속도를 변경할 때만 macOS의 실험적 권한 서비스를 사용합니다."
+            )
+        }
     }
 
     private var header: some View {
@@ -160,6 +182,13 @@ struct MenuBarView: View {
                 Text("수동").tag(ControlMode.manual)
             }
             .pickerStyle(.segmented)
+            .disabled(model.isPrivilegedServiceRemovalInProgress)
+
+            if model.isPrivilegedServiceRemovalInProgress {
+                Text("권한 서비스 제거 중에는 제어 모드를 변경할 수 없습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -244,7 +273,7 @@ struct MenuBarView: View {
         case .curve: "온도 커브 제어가 활성화되었습니다."
         case .manual: "고정 RPM 제어가 활성화되었습니다."
         case .restoring: "시스템 자동 모드로 복구 중입니다."
-        case .failed: "제어 오류로 자동 복구했습니다."
+        case .failed: "제어 상태를 확인할 수 없어 수동 제어를 중단했습니다."
         }
     }
 

@@ -31,6 +31,7 @@ actor ControlCoordinator {
     private let fans: [FanDescriptor]
     private var requestedTargets: [Int: Int] = [:]
     private var targetRequestedAt: Date?
+    private var isLowTemperatureSystemAutoActive = false
 
     init(
         client: any ControlClient,
@@ -52,6 +53,19 @@ actor ControlCoordinator {
         }
 
         do {
+            if try shouldUseSystemAuto(snapshot: snapshot) {
+                if !isLowTemperatureSystemAutoActive {
+                    try await requireAcknowledged(
+                        client.send(.restoreSystemAuto)
+                    )
+                }
+                requestedTargets.removeAll()
+                targetRequestedAt = nil
+                isLowTemperatureSystemAutoActive = true
+                return
+            }
+
+            isLowTemperatureSystemAutoActive = false
             var targets: [Int: Int] = [:]
             for fan in fans {
                 let rpm = try targetRPM(for: fan, snapshot: snapshot)
@@ -68,6 +82,7 @@ actor ControlCoordinator {
             _ = try? await client.send(.restoreSystemAuto)
             requestedTargets.removeAll()
             targetRequestedAt = nil
+            isLowTemperatureSystemAutoActive = true
             throw error
         }
     }
@@ -113,6 +128,7 @@ actor ControlCoordinator {
         _ = try? await client.send(.shutdown)
         requestedTargets.removeAll()
         targetRequestedAt = nil
+        isLowTemperatureSystemAutoActive = true
     }
 
     func restoreSystemAuto() async throws {
@@ -121,6 +137,24 @@ actor ControlCoordinator {
         )
         requestedTargets.removeAll()
         targetRequestedAt = nil
+        isLowTemperatureSystemAutoActive = true
+    }
+
+    private func shouldUseSystemAuto(
+        snapshot: SensorSnapshot
+    ) throws -> Bool {
+        guard settings.mode == .curve,
+              snapshot.thermalPressure != .critical
+        else {
+            return false
+        }
+        guard let temperature = snapshot.maximumTemperature else {
+            throw ControlCoordinatorError.missingTemperature
+        }
+        return try CurveEngine.shouldUseSystemAuto(
+            temperature: temperature,
+            points: settings.curve
+        )
     }
 
     private func targetRPM(
