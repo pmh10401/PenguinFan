@@ -256,17 +256,17 @@ validate_signing_identity() {
 
 if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   if [[ "$VERSION_WAS_SET" -eq 1 ]]; then
-    echo "Release helper version is fixed at 1.2.0." >&2
+    echo "Release helper version is fixed at 1.2.2." >&2
     exit 64
   fi
-  VERSION="1.2.0"
+  VERSION="1.2.2"
   APP_BUNDLE_NAME="PenguinFan.app"
-  PACKAGE_NAME="PenguinFan-1.2.0.pkg"
+  PACKAGE_NAME="PenguinFan-1.2.2.pkg"
   PACKAGE_IDENTIFIER="com.local.PenguinFan"
   OUTPUT_DIR="$ROOT/installer"
   OUTPUT_DIR_IS_TEST=0
   FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
-  LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.2.0.publication.lock"
+  LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.2.2.publication.lock"
   LOCK_WAIT_SECONDS="${PENGUINFAN_TASK6_LOCK_WAIT_SECONDS:-120}"
   LOCK_OWNED=0
   PUBLICATION_STATE_MANAGED=0
@@ -285,7 +285,7 @@ if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
     OUTPUT_DIR="$PENGUINFAN_RELEASE_OUTPUT_DIR"
     OUTPUT_DIR_IS_TEST=1
     FINAL_PACKAGE="$OUTPUT_DIR/$PACKAGE_NAME"
-    LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.2.0.publication.lock"
+    LOCK_FILE="$OUTPUT_DIR/.PenguinFan-1.2.2.publication.lock"
   fi
 
   if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
@@ -376,7 +376,7 @@ if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
   fi
 
   STAGING_DIR="$(/usr/bin/mktemp -d \
-    "$OUTPUT_DIR/.PenguinFan-1.2.0.staging.XXXXXX")"
+    "$OUTPUT_DIR/.PenguinFan-1.2.2.staging.XXXXXX")"
   PRIOR_VALID_PACKAGE="$STAGING_DIR/prior-validated-package.pkg"
 
   if [[ -L "$FINAL_PACKAGE" ]]; then
@@ -502,10 +502,10 @@ if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
     -o - "$INFO_PLIST")" == "com.local.PenguinFan" ]] \
     || { echo "Release bundle identifier verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw \
-    -o - "$INFO_PLIST")" == "1.2.0" ]] \
+    -o - "$INFO_PLIST")" == "1.2.2" ]] \
     || { echo "Release version verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleVersion raw \
-    -o - "$INFO_PLIST")" == "15" ]] \
+    -o - "$INFO_PLIST")" == "17" ]] \
     || { echo "Release build verification failed." >&2; exit 1; }
   [[ "$(/usr/bin/plutil -extract CFBundleDisplayName raw \
     -o - "$INFO_PLIST")" == "PenguinFan" ]] \

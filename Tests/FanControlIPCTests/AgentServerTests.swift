@@ -126,6 +126,9 @@ final class AgentServerTests: XCTestCase {
     func testXPCClientValidatorChecksEveryAncestorThroughApplications() {
         let connection = NSXPCConnection(serviceName: "test.invalid")
         defer { connection.invalidate() }
+        let executablePath = resolvedExecutablePath(
+            XPCClientValidator.requiredExecutablePath
+        )
         let inspector = RecordingFilesystemInspector { path in
             AgentServerTests.defaultSecureFilesystemMetadata(for: path)
         }
@@ -137,11 +140,54 @@ final class AgentServerTests: XCTestCase {
         )
         XCTAssertEqual(
             inspector.inspectedPaths,
-            XPCClientValidator.requiredFilesystemPaths
+            expectedFilesystemPaths(for: executablePath)
         )
         XCTAssertEqual(
             inspector.inspectedPaths.first,
             "/Applications"
+        )
+    }
+
+    func testXPCClientValidatorAcceptsLocalizedBundleLayout() {
+        let connection = NSXPCConnection(serviceName: "test.invalid")
+        defer { connection.invalidate() }
+        let localizedExecutablePath =
+            "/Applications/PenguinFan.localized/PenguinFan.app/Contents/MacOS/FanControllerApp"
+        let inspector = RecordingFilesystemInspector { path in
+            AgentServerTests.defaultSecureFilesystemMetadata(for: path)
+        }
+
+        XCTAssertTrue(
+            makeValidator(
+                executablePath: localizedExecutablePath,
+                filesystemMetadata: inspector.inspect
+            ).accepts(connection)
+        )
+        XCTAssertEqual(
+            inspector.inspectedPaths,
+            [
+                "/Applications",
+                "/Applications/PenguinFan.localized/PenguinFan.app",
+                "/Applications/PenguinFan.localized/PenguinFan.app/Contents",
+                "/Applications/PenguinFan.localized/PenguinFan.app/Contents/MacOS",
+                localizedExecutablePath
+            ]
+        )
+    }
+
+    func testXPCClientValidatorAcceptsSymlinkedApplicationsPath() {
+        let connection = NSXPCConnection(serviceName: "test.invalid")
+        defer { connection.invalidate() }
+        let symlinkedExecutablePath =
+            "/Applications/PenguinFan.app/Contents/MacOS/FanControllerApp"
+
+        XCTAssertTrue(
+            makeValidator(
+                executablePath: symlinkedExecutablePath,
+                filesystemMetadata: { path in
+                    AgentServerTests.defaultSecureFilesystemMetadata(for: path)
+                }
+            ).accepts(connection)
         )
     }
 
@@ -174,6 +220,14 @@ final class AgentServerTests: XCTestCase {
     func testXPCClientValidatorRejectsUnsafeModesTypesAndACLs() {
         let connection = NSXPCConnection(serviceName: "test.invalid")
         defer { connection.invalidate() }
+        let executablePath = resolvedExecutablePath(
+            XPCClientValidator.requiredExecutablePath
+        )
+        let bundlePath = URL(fileURLWithPath: executablePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .path
         let unsafeMetadata: [
             (path: String, metadata: FilesystemSecurityMetadata)
         ] = [
@@ -185,14 +239,14 @@ final class AgentServerTests: XCTestCase {
                 )
             ),
             (
-                path: XPCClientValidator.requiredExecutablePath,
+                path: executablePath,
                 metadata: secureFilesystemMetadata(
-                    for: XPCClientValidator.requiredExecutablePath,
+                    for: executablePath,
                     mode: S_IFREG | 0o757
                 )
             ),
             (
-                path: XPCClientValidator.requiredBundlePath,
+                path: bundlePath,
                 metadata: FilesystemSecurityMetadata(
                     ownerUID: 0,
                     mode: S_IFLNK | 0o755,
@@ -561,6 +615,27 @@ final class AgentServerTests: XCTestCase {
         NSXPCConnection(serviceName: "test.invalid")
     }
 
+    private func resolvedExecutablePath(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardized
+            .path
+    }
+
+    private func expectedFilesystemPaths(for executablePath: String) -> [String] {
+        let executableURL = URL(fileURLWithPath: executablePath)
+        let macOSDirectoryURL = executableURL.deletingLastPathComponent()
+        let contentsDirectoryURL = macOSDirectoryURL.deletingLastPathComponent()
+        let bundleURL = contentsDirectoryURL.deletingLastPathComponent()
+        return [
+            "/Applications",
+            bundleURL.path,
+            contentsDirectoryURL.path,
+            macOSDirectoryURL.path,
+            executablePath,
+        ]
+    }
+
     private func secureFilesystemMetadata(
         for path: String,
         ownerUID: uid_t = 0,
@@ -582,7 +657,7 @@ final class AgentServerTests: XCTestCase {
         hasUnsafeExtendedACL: Bool = false
     ) -> FilesystemSecurityMetadata {
         let isExecutable =
-            path == XPCClientValidator.requiredExecutablePath
+            path.hasSuffix("/\(XPCClientValidator.requiredExecutableName)")
         return FilesystemSecurityMetadata(
             ownerUID: ownerUID,
             mode: mode ?? (

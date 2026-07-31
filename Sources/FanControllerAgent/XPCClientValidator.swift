@@ -22,6 +22,7 @@ public final class XPCClientValidator: @unchecked Sendable {
         "/Applications/PenguinFan.app"
     static let requiredExecutablePath =
         "/Applications/PenguinFan.app/Contents/MacOS/FanControllerApp"
+    static let requiredExecutableName = "FanControllerApp"
     static let requiredSigningIdentifier =
         "com.local.PenguinFan"
     static let requiredTeamIdentifier = "UUUQNVQ67B"
@@ -201,7 +202,10 @@ public final class XPCClientValidator: @unchecked Sendable {
             }
 
             let codeIdentity = try processCodeIdentity(identity.processID)
-            guard codeIdentity.executablePath == Self.requiredExecutablePath else {
+            let clientPaths = Self.clientInstallationPaths(
+                executablePath: codeIdentity.executablePath
+            )
+            guard clientPaths.isValidLayout else {
                 reject(reason: "executable_path_mismatch")
                 return false
             }
@@ -221,7 +225,10 @@ public final class XPCClientValidator: @unchecked Sendable {
                 reject(reason: "team_identifier_mismatch")
                 return false
             }
-            try validateInstallationFilesystem()
+            try validateInstallationFilesystem(
+                requiredExecutablePath: clientPaths.executablePath,
+                requiredFilesystemPaths: clientPaths.requiredFilesystemPaths
+            )
             accept()
             return true
         } catch {
@@ -230,11 +237,14 @@ public final class XPCClientValidator: @unchecked Sendable {
         }
     }
 
-    private func validateInstallationFilesystem() throws {
-        for path in Self.requiredFilesystemPaths {
+    private func validateInstallationFilesystem(
+        requiredExecutablePath: String,
+        requiredFilesystemPaths: [String]
+    ) throws {
+        for path in requiredFilesystemPaths {
             let metadata = try filesystemMetadata(path)
             let expectedKind: FilesystemObjectKind =
-                path == Self.requiredExecutablePath
+                path == requiredExecutablePath
                     ? .regularFile
                     : .directory
             let unsafeWriteMask: mode_t =
@@ -249,6 +259,45 @@ public final class XPCClientValidator: @unchecked Sendable {
                 throw ValidationError.installationPermissionsInvalid
             }
         }
+    }
+
+    private static func clientInstallationPaths(
+        executablePath: String
+    ) -> (
+        executablePath: String,
+        bundlePath: String,
+        requiredFilesystemPaths: [String],
+        isValidLayout: Bool
+    ) {
+        let executableURL = URL(
+            fileURLWithPath: executablePath
+        ).resolvingSymlinksInPath()
+        let resolvedExecutablePath = executableURL.standardized.path
+        let executableName = executableURL.lastPathComponent
+        let macOSDirectoryURL = executableURL.deletingLastPathComponent()
+        let contentsDirectoryURL = macOSDirectoryURL.deletingLastPathComponent()
+        let bundleURL = contentsDirectoryURL.deletingLastPathComponent()
+        let requiredLayout =
+            executableName == Self.requiredExecutableName &&
+            macOSDirectoryURL.lastPathComponent == "MacOS" &&
+            contentsDirectoryURL.lastPathComponent == "Contents" &&
+            bundleURL.path.hasSuffix(".app") &&
+            bundleURL.path.hasPrefix("/Applications/")
+
+        let requiredFilesystemPaths = [
+            "/Applications",
+            bundleURL.path,
+            contentsDirectoryURL.path,
+            macOSDirectoryURL.path,
+            resolvedExecutablePath
+        ]
+
+        return (
+            executablePath: resolvedExecutablePath,
+            bundlePath: bundleURL.path,
+            requiredFilesystemPaths: requiredFilesystemPaths,
+            isValidLayout: requiredLayout
+        )
     }
 
     private func accept() {

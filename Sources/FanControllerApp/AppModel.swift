@@ -108,6 +108,17 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if mode == .curve {
+            do {
+                try CurveEngine.validate(settings.curve)
+            } catch {
+                diagnosticMessage =
+                    "커브 설정 값이 올바르지 않습니다: " +
+                    curveValidationMessage(for: error)
+                return
+            }
+        }
+
         modeRequestGeneration &+= 1
         let generation = modeRequestGeneration
 
@@ -287,5 +298,23 @@ final class AppModel: ObservableObject {
             )
         }
         settings.curve[index] = point
+    }
+
+    private func curveValidationMessage(for error: Error) -> String {
+        guard let curveError = error as? CurveEngineError else {
+            return "알 수 없는 오류가 발생했습니다."
+        }
+        switch curveError {
+        case .insufficientPoints:
+            return "포인트는 최소 2개가 필요합니다."
+        case .nonFiniteTemperature:
+            return "온도 값이 유효하지 않습니다."
+        case .temperaturesNotIncreasing:
+            return "온도가 오름차순이어야 합니다."
+        case .rpmDecreases:
+            return "RPM은 온도가 높을수록 감소해서는 안 됩니다."
+        case .invalidHardwareRange:
+            return "시스템 팬 RPM 범위를 검증할 수 없습니다."
+        }
     }
 }

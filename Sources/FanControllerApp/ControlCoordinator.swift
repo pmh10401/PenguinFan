@@ -32,6 +32,9 @@ actor ControlCoordinator {
     private var requestedTargets: [Int: Int] = [:]
     private var targetRequestedAt: Date?
     private var isLowTemperatureSystemAutoActive = false
+    private var lastCurveTemperature: Double?
+    private var lastCurveTemperatureSampleAt: Date?
+    private var curveTemperatureMissingSince: Date?
 
     init(
         client: any ControlClient,
@@ -44,6 +47,11 @@ actor ControlCoordinator {
     }
 
     func update(settings: FanSettings) {
+        if settings.mode != .curve {
+            lastCurveTemperature = nil
+            lastCurveTemperatureSampleAt = nil
+            curveTemperatureMissingSince = nil
+        }
         self.settings = settings
     }
 
@@ -69,8 +77,11 @@ actor ControlCoordinator {
             var targets: [Int: Int] = [:]
             for fan in fans {
                 let rpm = try targetRPM(for: fan, snapshot: snapshot)
+                if rpm == nil {
+                    return
+                }
                 try await requireAcknowledged(
-                    client.send(.setRPM(fan: fan.index, rpm: rpm))
+                    client.send(.setRPM(fan: fan.index, rpm: rpm!))
                 )
                 targets[fan.index] = rpm
             }
@@ -149,7 +160,7 @@ actor ControlCoordinator {
             return false
         }
         guard let temperature = snapshot.maximumTemperature else {
-            throw ControlCoordinatorError.missingTemperature
+            return false
         }
         return try CurveEngine.shouldUseSystemAuto(
             temperature: temperature,
@@ -160,15 +171,17 @@ actor ControlCoordinator {
     private func targetRPM(
         for fan: FanDescriptor,
         snapshot: SensorSnapshot
-    ) throws -> Int {
+    ) throws -> Int? {
         if snapshot.thermalPressure == .critical {
             return fan.maximumRPM
         }
 
         switch settings.mode {
         case .curve:
-            guard let temperature = snapshot.maximumTemperature else {
-                throw ControlCoordinatorError.missingTemperature
+            guard let temperature = try resolvedCurveTemperature(
+                from: snapshot
+            ) else {
+                return nil
             }
             return try CurveEngine.targetRPM(
                 temperature: temperature,
@@ -184,6 +197,40 @@ actor ControlCoordinator {
         case .systemAuto:
             return fan.minimumRPM
         }
+    }
+
+    private func resolvedCurveTemperature(
+        from snapshot: SensorSnapshot
+    ) throws -> Double? {
+        guard snapshot.thermalPressure != .critical else {
+            lastCurveTemperature = nil
+            lastCurveTemperatureSampleAt = nil
+            curveTemperatureMissingSince = nil
+            return nil
+        }
+
+        guard let temperature = snapshot.maximumTemperature else {
+            if let missingSince = curveTemperatureMissingSince,
+               snapshot.timestamp.timeIntervalSince(missingSince) > 5 {
+                throw ControlCoordinatorError.missingTemperature
+            }
+
+            if let previousSampleAt = lastCurveTemperatureSampleAt,
+               let lastCurveTemperature,
+               snapshot.timestamp.timeIntervalSince(previousSampleAt) <= 5 {
+                return lastCurveTemperature
+            }
+
+            if curveTemperatureMissingSince == nil {
+                curveTemperatureMissingSince = snapshot.timestamp
+            }
+            return nil
+        }
+
+        curveTemperatureMissingSince = nil
+        lastCurveTemperature = temperature
+        lastCurveTemperatureSampleAt = snapshot.timestamp
+        return temperature
     }
 
     private func requireAcknowledged(

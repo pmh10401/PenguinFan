@@ -276,8 +276,8 @@ if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
     exit 64
   fi
   BUNDLE_ID="com.local.PenguinFan"
-  APP_VERSION="1.2.0"
-  BUILD_NUMBER="15"
+  APP_VERSION="1.2.2"
+  BUILD_NUMBER="17"
   APP_DISPLAY_NAME="PenguinFan"
   APP_BUNDLE_NAME="PenguinFan.app"
   validate_signing_identity \
@@ -402,11 +402,11 @@ if [[ "$PRIVILEGED_HELPER" -eq 1 ]]; then
     validate_test_output_root "$OUTPUT_ROOT" || exit 64
   fi
   FINAL_APP="$OUTPUT_ROOT/dist-$APP_VERSION/$APP_BUNDLE_NAME"
-  APP_LOCK_FILE="$OUTPUT_ROOT/.PenguinFan-1.2.0.app-publication.lock"
+  APP_LOCK_FILE="$OUTPUT_ROOT/.PenguinFan-1.2.2.app-publication.lock"
   assert_safe_mutation_path "$FINAL_APP" "$OUTPUT_ROOT" || exit 64
   assert_safe_mutation_path "$APP_LOCK_FILE" "$OUTPUT_ROOT" || exit 64
   APP_STAGING_ROOT="$(/usr/bin/mktemp -d \
-    "$OUTPUT_ROOT/.PenguinFan-1.2.0.app-staging.XXXXXX")"
+    "$OUTPUT_ROOT/.PenguinFan-1.2.2.app-staging.XXXXXX")"
   APP_BACKUP="$APP_STAGING_ROOT/prior-app"
   APP="$APP_STAGING_ROOT/$APP_BUNDLE_NAME"
   trap cleanup_release_app_publication EXIT

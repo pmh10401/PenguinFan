@@ -9,14 +9,15 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 > **영원히 무료:** PenguinFan은 [MIT 라이선스](LICENSE)로 무료 배포됩니다.
 > 개인 및 상업적 사용, 학습, 수정, 재배포가 가능합니다.
 
-## PenguinFan 1.2.0 정식 릴리즈
+## PenguinFan 1.2.2 정식 릴리즈
 
-`1.2.0`은 첫 커브 포인트 미만의 시스템 제어 구간, 직접 RPM 입력과 증감
-버튼, 더 넓은 설정 창을 추가합니다. 서명된 `SMAppService` LaunchDaemon과
-신원을 검증하는 권한 XPC 구조는 그대로 유지합니다.
+`1.2.2`는 설치 후 커브와 수동 제어가 안정적으로 동작하도록 보완한 릴리즈입니다.
+로컬라이즈드 및 심볼릭 링크 앱 경로를 지원하고, 앱 업데이트 중 승인된
+`SMAppService` 헬퍼 권한을 유지하며, 짧은 온도 측정 공백에서도 커브 명령을
+안정적으로 유지합니다.
 
 - 정식 앱: `/Applications/PenguinFan.app`
-- 설치 파일: `PenguinFan-1.2.0.pkg`
+- 설치 파일: `PenguinFan-1.2.2.pkg`
 - Apple Development 인증서로 서명
 - `Mac14,6` M2 Max MacBook Pro에서 실제 검증
 - Apple 공증은 아직 받지 않음
@@ -53,23 +54,21 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 | 커브 센서 | `TCMz` CPU die hotspot |
 | 최소 macOS | macOS 13 |
 
-2026년 7월 30일 실제 하드웨어 Curve 테스트 결과:
+2026년 7월 31일 실제 하드웨어 Curve 테스트 결과:
 
-- 온도: 약 `78 C`
-- 커브 목표: `4873 RPM`
-- Fan 1 반응: `4922 RPM`
-- Fan 2 반응: `4921 RPM`
-- System 모드 복귀: 성공
-- 복귀 후 측정값: 약 `1990 / 2158 RPM`
+- 온도: 약 `81.5 C`
+- 커브 목표: `5063 RPM`
+- Fan 1 반응: `5065 RPM`
+- Fan 2 반응: `5048 RPM`
 - XPC 검증: `accepted reason=validated`
-- 복귀 후 권한 헬퍼 종료 코드: `0`
+- 권한 헬퍼: 실행 중이며 Curve 명령 수락 확인
 
 다른 Apple Silicon 모델은 SMC 키와 팬 범위가 다를 수 있어 현재 지원 대상이
 아닙니다.
 
 ## 다운로드 및 설치
 
-1. [GitHub Releases](../../releases)에서 `PenguinFan-1.2.0.pkg`를 받습니다.
+1. [GitHub Releases](../../releases)에서 `PenguinFan-1.2.2.pkg`를 받습니다.
 2. 패키지를 열어 설치합니다.
 3. `/Applications/PenguinFan.app`을 실행합니다.
 4. **커브** 또는 **수동**을 선택하고 권한 안내에서 **계속**을 누릅니다.
@@ -82,10 +81,10 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 ## 안전 설계
 
 - 헬퍼는 상태, 하트비트, 제한 범위 RPM, 복귀, 종료 명령만 처리합니다.
-- 클라이언트 경로, 서명 식별자, Team ID, 콘솔 사용자와 설치 경로 보안을
-  모두 확인합니다.
-- 하트비트 손실, 연결 실패, 잠자기, 센서 오류, 앱 종료 또는 System 모드
-  선택 시 두 팬을 macOS 자동 제어로 복귀시킵니다.
+- `/Applications` 아래 서명된 앱 번들 구조, 서명 식별자, Team ID, 콘솔 사용자와
+  설치 경로 보안을 모두 확인합니다.
+- 하트비트 손실, 연결 실패, 잠자기, 지속적인 센서 오류, 앱 종료 또는 System
+  모드 선택 시 두 팬을 macOS 자동 제어로 복귀시킵니다.
 - macOS thermal pressure가 위험 수준이면 최대 지원 팬 속도를 요청합니다.
 
 직접 팬 제어는 냉각, 소음, 부품 온도와 하드웨어 수명에 영향을 줄 수
@@ -97,6 +96,8 @@ PenguinFan은 M2 Max MacBook Pro를 위한 무료 오픈소스 네이티브 macO
 
 ```bash
 ./script/build_and_run.sh --verify
+
+./script/run_tests.sh
 ```
 
 정식 권한 패키지를 만들려면 유효한 코드 서명 인증서가 필요합니다. 포크를

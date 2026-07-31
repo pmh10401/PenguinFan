@@ -11,15 +11,15 @@ control, and one-click restoration to macOS automatic fan control.
 > [MIT License](LICENSE). You may use, study, modify, and redistribute it,
 > including for commercial purposes.
 
-## PenguinFan 1.2.0
+## PenguinFan 1.2.2
 
-Version `1.2.0` adds a low-temperature System zone below the first curve point,
-direct RPM entry with increment buttons, and a larger Settings window. The
-signed `SMAppService` LaunchDaemon and validated privileged XPC architecture
-remain unchanged.
+Version `1.2.2` restores reliable Curve and Manual control after installation.
+It supports localized and symbolic-link application paths, preserves an
+approved `SMAppService` helper across app updates, and keeps a Curve command
+stable through a brief missing-temperature sample.
 
 - Stable app: `/Applications/PenguinFan.app`
-- Package: `PenguinFan-1.2.0.pkg`
+- Package: `PenguinFan-1.2.2.pkg`
 - Signed with an Apple Development certificate
 - Verified on a `Mac14,6` M2 Max MacBook Pro
 - Not notarized by Apple
@@ -56,23 +56,21 @@ hardware validation is limited to the model listed below.
 | Curve sensor | `TCMz` CPU die hotspot |
 | Minimum macOS | macOS 13 |
 
-Real hardware Curve test on July 30, 2026:
+Real hardware Curve test on July 31, 2026:
 
-- Temperature: approximately `78 C`
-- Curve target: `4873 RPM`
-- Fan 1 response: `4922 RPM`
-- Fan 2 response: `4921 RPM`
-- System restoration: successful
-- Restored readings: approximately `1990 / 2158 RPM`
+- Temperature: approximately `81.5 C`
+- Curve target: `5063 RPM`
+- Fan 1 response: `5065 RPM`
+- Fan 2 response: `5048 RPM`
 - XPC validation: `accepted reason=validated`
-- Privileged helper exit after restoration: `0`
+- Privileged helper: running and accepting Curve commands
 
 Other Apple Silicon models may use different SMC keys and fan ranges and are
 not currently supported.
 
 ## Download and install
 
-1. Download `PenguinFan-1.2.0.pkg` from [GitHub Releases](../../releases).
+1. Download `PenguinFan-1.2.2.pkg` from [GitHub Releases](../../releases).
 2. Open the package and complete the installer.
 3. Launch `/Applications/PenguinFan.app`.
 4. Select **Curve** or **Manual**, review the permission explanation, and
@@ -87,10 +85,11 @@ privileged service starts only when fan control is requested.
 
 - The helper accepts only status, heartbeat, bounded RPM, restore, and shutdown
   commands.
-- The client must match the expected path, signing identifier, Team ID, console
-  user, and secure installation path.
-- A lost heartbeat, connection failure, sleep event, sensor failure, app exit,
-  or explicit System selection restores both fans to macOS automatic control.
+- The client must match the signed bundle layout under `/Applications`, signing
+  identifier, Team ID, console user, and secure installation path.
+- A lost heartbeat, connection failure, sleep event, sustained sensor failure,
+  app exit, or explicit System selection restores both fans to macOS automatic
+  control.
 - Critical macOS thermal pressure requests the maximum supported fan speed.
 
 Direct fan control can affect cooling, noise, component temperature, and
@@ -102,6 +101,8 @@ Requirements: macOS 13 or later, Apple Silicon, and Xcode with Swift 6 support.
 
 ```bash
 ./script/build_and_run.sh --verify
+
+./script/run_tests.sh
 ```
 
 The privileged release package requires a valid signing identity. Forks must

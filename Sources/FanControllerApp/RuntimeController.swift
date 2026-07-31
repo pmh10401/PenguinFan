@@ -501,7 +501,8 @@ final class RuntimeController: ObservableObject {
             error.localizedDescription
         )
         model.diagnosticMessage =
-            "팬 제어 권한 서비스에 연결하지 못했습니다. \(error.localizedDescription) 시스템 설정을 확인하세요. 읽기 전용 모드를 유지합니다."
+            "제어를 유지할 수 없어 시스템 자동 모드로 복귀했습니다. " +
+            failureReason(for: error)
     }
 
     private func failPendingApproval(
@@ -537,6 +538,25 @@ final class RuntimeController: ObservableObject {
             generation: model.modeRequestGeneration,
             model: model
         )
+    }
+
+    private func failureReason(for error: Error) -> String {
+        switch error {
+        case let controlError as ControlCoordinatorError:
+            switch controlError {
+            case .missingTemperature:
+                return "온도 센서를 읽지 못해 잠시 제어를 중지했습니다. 센서를 다시 확인하세요."
+            case .fanDidNotRespond(let fanIndex):
+                return "팬 \(fanIndex) 응답이 없어서 커브/수동 제어를 중지했습니다."
+            case .rejected(let code, let message):
+                if code.lowercased().contains("validation") {
+                    return "XPC 유효성 검사 거부: \(code). \(message). 권한 승인/서비스 상태를 확인하세요."
+                }
+                return "에이전트가 요청을 거절했습니다(\(code)): \(message). macOS 권한 서비스 상태를 확인하세요."
+            }
+        default:
+            return "\(error.localizedDescription). 시스템 설정의 권한 항목과 팬 제어 상태를 확인하세요. 읽기 전용 모드는 유지됩니다."
+        }
     }
 
     private func removePrivilegedService(model: AppModel) async -> Bool {

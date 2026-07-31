@@ -127,32 +127,9 @@ final class PrivilegedServiceManager {
             return
         }
 
-        state = .registering
-        do {
-            try service.unregister()
-
-            for _ in 0..<30 {
-                if service.status == .notRegistered {
-                    break
-                }
-                try await Task.sleep(nanoseconds: 100_000_000)
-            }
-            guard service.status == .notRegistered else {
-                throw NSError(
-                    domain: "PenguinFan.PrivilegedService",
-                    code: 1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "Timed out waiting for the previous helper registration to stop."
-                    ]
-                )
-            }
-
-            try service.register()
-            refreshStatus()
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
+        // ServiceManagement resolves the helper through the updated app bundle.
+        // Keeping its registration preserves the user's existing approval.
+        refreshStatus()
     }
 
     func openApprovalSettings() {
